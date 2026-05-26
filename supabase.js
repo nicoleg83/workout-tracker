@@ -143,10 +143,14 @@ const Supabase = (() => {
     });
   }
 
+  async function deleteRecord(table, id) {
+    return restReq(`/${table}?id=eq.${id}`, { method: 'DELETE' });
+  }
+
   return {
     restoreSession, signIn, signUp, signOut, getUser,
     getExercises, insertExercises,
     getSessions, getSetLogs, getExerciseHistory,
-    insert, update,
+    insert, update, deleteRecord,
   };
 })();

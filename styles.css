@@ -772,6 +772,14 @@ body {
 }
 .logout-btn:hover { color: var(--text2); }
 
+/* ── Danger icon button (delete) ── */
+.icon-btn-danger {
+  background: none; border: none; color: var(--text3); cursor: pointer;
+  padding: 6px; border-radius: 8px; display: flex; align-items: center;
+  transition: color 0.15s; flex-shrink: 0;
+}
+.icon-btn-danger:hover, .icon-btn-danger:active { color: #f87171; }
+
 /* ── Last session hint ── */
 .exercise-row-last {
   font-size: 11px;
