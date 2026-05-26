@@ -779,3 +779,58 @@ body {
   margin-top: 2px;
 }
 .mb16 { margin-bottom: 16px; }
+
+/* ── Session detail ── */
+.sdet-stats {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.sdet-stat {
+  flex: 1;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 8px;
+  text-align: center;
+}
+.sdet-stat-val { font-size: 20px; font-weight: 800; }
+.sdet-stat-label { font-size: 11px; color: var(--text3); margin-top: 2px; text-transform: uppercase; letter-spacing: 0.4px; }
+
+.sdet-ex-name {
+  font-size: 15px;
+  font-weight: 700;
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.sdet-pr-badge { font-size: 12px; font-weight: 600; }
+
+.sdet-set-header {
+  display: grid;
+  grid-template-columns: 32px 1fr 1fr 40px;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text3);
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+}
+.sdet-set-row {
+  display: grid;
+  grid-template-columns: 32px 1fr 1fr 40px;
+  gap: 8px;
+  padding: 7px 0;
+  font-size: 14px;
+  border-bottom: 1px solid var(--bg3);
+  align-items: center;
+}
+.sdet-set-row:last-child { border-bottom: none; }
+.sdet-set-num { color: var(--text3); font-size: 13px; }
+.sdet-set-weight { font-weight: 600; }
+.sdet-set-reps { color: var(--text2); }
+.sdet-pr { font-size: 11px; font-weight: 700; color: var(--gold); }

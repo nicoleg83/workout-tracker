@@ -17,6 +17,8 @@ const state = {
   progressHistory: [],
   view: 'home',
   detailExercise: null,
+  historySession: null,
+  historyLogs: [],
   loading: false,
   seeding: false,
 };
@@ -471,8 +473,9 @@ function renderView() {
     case 'workout':  el.innerHTML = renderWorkout(); break;
     case 'exercise-detail': el.innerHTML = renderExerciseDetail(); break;
     case 'summary':  el.innerHTML = renderSummary(); break;
-    case 'progress': el.innerHTML = renderProgress(); break;
-    case 'history':  el.innerHTML = renderHistory(); break;
+    case 'progress':        el.innerHTML = renderProgress(); break;
+    case 'history':         el.innerHTML = renderHistory(); break;
+    case 'session-detail':  el.innerHTML = renderSessionDetail(); break;
     default:         el.innerHTML = renderHome();
   }
   el.scrollTop = 0;
@@ -823,6 +826,119 @@ function renderProgress() {
     ${historyHtml}`;
 }
 
+// ── Session detail ────────────────────────────────────────────────
+async function openSessionDetail(sessionId) {
+  const session = state.sessions.find(s => s.id === sessionId);
+  if (!session) return;
+  state.historySession = session;
+  state.historyLogs = [];
+  state.view = 'session-detail';
+  renderView();
+
+  try {
+    state.historyLogs = await Supabase.getSetLogs(sessionId);
+  } catch (_) {
+    state.historyLogs = await DB.getAll('set_logs', 'session_id', sessionId);
+  }
+  if (state.view === 'session-detail') renderView();
+}
+
+function renderSessionDetail() {
+  const session = state.historySession;
+  if (!session) return renderHistory();
+
+  const dayNames = { 'Day 1': 'Push', 'Day 2': 'Pull', 'Day 3': 'Legs' };
+  const completedLogs = state.historyLogs.filter(l => l.completed);
+
+  if (!state.historyLogs.length) {
+    return `
+      <div class="page-header">
+        <button class="back-btn" onclick="setTab('history')">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+        </button>
+        <div>
+          <div class="page-title">${session.day} — ${dayNames[session.day] || ''}</div>
+          <div class="page-subtitle">${fmtDate(session.date)}</div>
+        </div>
+      </div>
+      <div class="empty"><div class="empty-icon">⏳</div><div class="empty-body">Loading…</div></div>`;
+  }
+
+  if (!completedLogs.length) {
+    return `
+      <div class="page-header">
+        <button class="back-btn" onclick="setTab('history')">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+        </button>
+        <div>
+          <div class="page-title">${session.day} — ${dayNames[session.day] || ''}</div>
+          <div class="page-subtitle">${fmtDate(session.date)}</div>
+        </div>
+      </div>
+      <div class="empty"><div class="empty-icon">📋</div><div class="empty-body">No sets were logged for this session.</div></div>`;
+  }
+
+  // Group completed logs by exercise, preserving set order
+  const grouped = {};
+  const order = [];
+  for (const log of completedLogs) {
+    if (!grouped[log.exercise_id]) {
+      grouped[log.exercise_id] = [];
+      order.push(log.exercise_id);
+    }
+    grouped[log.exercise_id].push(log);
+  }
+
+  const totalSets = completedLogs.length;
+  const totalVolume = completedLogs.reduce((sum, l) => sum + (l.weight_lbs || 0) * (l.reps || 0), 0);
+  const prs = completedLogs.filter(l => l.is_pr).length;
+
+  const statBar = `
+    <div class="sdet-stats">
+      <div class="sdet-stat"><div class="sdet-stat-val">${totalSets}</div><div class="sdet-stat-label">Sets</div></div>
+      <div class="sdet-stat"><div class="sdet-stat-val">${order.length}</div><div class="sdet-stat-label">Exercises</div></div>
+      ${prs ? `<div class="sdet-stat"><div class="sdet-stat-val" style="color:var(--gold)">${prs}</div><div class="sdet-stat-label">PRs</div></div>` : ''}
+      ${totalVolume ? `<div class="sdet-stat"><div class="sdet-stat-val">${(totalVolume/1000).toFixed(1)}k</div><div class="sdet-stat-label">lbs volume</div></div>` : ''}
+    </div>`;
+
+  const exerciseCards = order.map(exId => {
+    const ex = state.exercises.find(e => e.id === exId);
+    const name = ex?.name || 'Exercise';
+    const sets = grouped[exId].sort((a, b) => a.set_number - b.set_number);
+    const hasPR = sets.some(s => s.is_pr);
+
+    const rows = sets.map(s => `
+      <div class="sdet-set-row">
+        <span class="sdet-set-num">${s.set_number}</span>
+        <span class="sdet-set-weight">${s.weight_lbs != null ? s.weight_lbs + ' lbs' : '—'}</span>
+        <span class="sdet-set-reps">${s.reps != null ? s.reps + ' reps' : '—'}</span>
+        ${s.is_pr ? '<span class="sdet-pr">PR</span>' : ''}
+      </div>`).join('');
+
+    return `
+      <div class="card">
+        <div class="sdet-ex-name">${name}${hasPR ? ' <span class="sdet-pr-badge">🏆 PR</span>' : ''}</div>
+        <div class="sdet-set-header">
+          <span>Set</span><span>Weight</span><span>Reps</span><span></span>
+        </div>
+        ${rows}
+      </div>`;
+  }).join('');
+
+  return `
+    <div class="page-header">
+      <button class="back-btn" onclick="setTab('history')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+      </button>
+      <div>
+        <div class="page-title">${session.day} — ${dayNames[session.day] || ''}</div>
+        <div class="page-subtitle">${fmtDate(session.date)} · ${daysAgo(session.date)}</div>
+      </div>
+    </div>
+    ${statBar}
+    ${exerciseCards}`;
+}
+
 // ── History view ──────────────────────────────────────────────────
 function renderHistory() {
   if (!state.sessions.length) {
@@ -835,11 +951,15 @@ function renderHistory() {
       </div>`;
   }
 
+  const dayNames = { 'Day 1': 'Push', 'Day 2': 'Pull', 'Day 3': 'Legs' };
   const cards = state.sessions.map(s => `
-    <div class="session-card">
+    <div class="session-card" onclick="openSessionDetail('${s.id}')">
       <div class="session-card-header">
-        <div class="session-card-day">${s.day}</div>
-        <div class="session-card-date">${fmtDate(s.date)}</div>
+        <div>
+          <div class="session-card-day">${s.day} — ${dayNames[s.day] || ''}</div>
+          <div class="session-card-date">${fmtDate(s.date)}</div>
+        </div>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" style="color:var(--text3);flex-shrink:0"><path d="M9 18l6-6-6-6"/></svg>
       </div>
       <div class="session-card-stats">${daysAgo(s.date)}</div>
     </div>`).join('');
