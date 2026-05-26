@@ -1,4 +1,4 @@
-const CACHE = 'workout-v15';
+const CACHE = 'workout-v19';
 const BASE = self.registration.scope;
 const SHELL = [
   BASE,

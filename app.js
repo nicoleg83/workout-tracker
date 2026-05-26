@@ -557,6 +557,7 @@ function renderHome() {
 
 // ── Workout view ─────────────────────────────────────────────────
 function renderWorkout() {
+  if (!state.activeSession) { setTab('home'); return ''; }
   const exercises = currentDayExercises();
   const prog = exerciseProgress(exercises);
   const dayNames = { 'Day 1':'Push', 'Day 2':'Pull', 'Day 3':'Legs' };
@@ -1257,6 +1258,7 @@ async function handleLogout() {
   state.sessions = [];
   state.exercises = [];
   state.activeSession = null;
+  state.activeDay = null;
   state.setLogs = {};
   state.lastLogs = {};
   showLoginScreen();
