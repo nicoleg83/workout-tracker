@@ -831,15 +831,20 @@ async function openSessionDetail(sessionId) {
   const session = state.sessions.find(s => s.id === sessionId);
   if (!session) return;
   state.historySession = session;
-  state.historyLogs = [];
+  state.historyLogs = null; // null = fetching
   state.view = 'session-detail';
   renderView();
 
+  // Try Supabase first; if it returns nothing (e.g. old rows blocked by RLS),
+  // fall back to IndexedDB which always has local data.
+  let logs = [];
   try {
-    state.historyLogs = await Supabase.getSetLogs(sessionId);
-  } catch (_) {
-    state.historyLogs = await DB.getAll('set_logs', 'session_id', sessionId);
+    logs = await Supabase.getSetLogs(sessionId);
+  } catch (_) {}
+  if (!logs.length) {
+    logs = await DB.getAll('set_logs', 'session_id', sessionId);
   }
+  state.historyLogs = logs; // [] or [...rows] — never null after fetch
   if (state.view === 'session-detail') renderView();
 }
 
@@ -848,34 +853,26 @@ function renderSessionDetail() {
   if (!session) return renderHistory();
 
   const dayNames = { 'Day 1': 'Push', 'Day 2': 'Pull', 'Day 3': 'Legs' };
-  const completedLogs = state.historyLogs.filter(l => l.completed);
-
-  if (!state.historyLogs.length) {
-    return `
-      <div class="page-header">
-        <button class="back-btn" onclick="setTab('history')">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
-        </button>
-        <div>
-          <div class="page-title">${session.day} — ${dayNames[session.day] || ''}</div>
-          <div class="page-subtitle">${fmtDate(session.date)}</div>
-        </div>
+  const header = `
+    <div class="page-header">
+      <button class="back-btn" onclick="setTab('history')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+      </button>
+      <div>
+        <div class="page-title">${session.day} — ${dayNames[session.day] || ''}</div>
+        <div class="page-subtitle">${fmtDate(session.date)} · ${daysAgo(session.date)}</div>
       </div>
-      <div class="empty"><div class="empty-icon">⏳</div><div class="empty-body">Loading…</div></div>`;
+    </div>`;
+
+  // Still fetching
+  if (state.historyLogs === null) {
+    return `${header}<div class="empty"><div class="empty-icon">⏳</div><div class="empty-body">Loading…</div></div>`;
   }
 
+  const completedLogs = state.historyLogs.filter(l => l.completed);
+
   if (!completedLogs.length) {
-    return `
-      <div class="page-header">
-        <button class="back-btn" onclick="setTab('history')">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
-        </button>
-        <div>
-          <div class="page-title">${session.day} — ${dayNames[session.day] || ''}</div>
-          <div class="page-subtitle">${fmtDate(session.date)}</div>
-        </div>
-      </div>
-      <div class="empty"><div class="empty-icon">📋</div><div class="empty-body">No sets were logged for this session.</div></div>`;
+    return `${header}<div class="empty"><div class="empty-icon">📋</div><div class="empty-body">No sets were logged for this session.</div></div>`;
   }
 
   // Group completed logs by exercise, preserving set order
@@ -925,18 +922,7 @@ function renderSessionDetail() {
       </div>`;
   }).join('');
 
-  return `
-    <div class="page-header">
-      <button class="back-btn" onclick="setTab('history')">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
-      </button>
-      <div>
-        <div class="page-title">${session.day} — ${dayNames[session.day] || ''}</div>
-        <div class="page-subtitle">${fmtDate(session.date)} · ${daysAgo(session.date)}</div>
-      </div>
-    </div>
-    ${statBar}
-    ${exerciseCards}`;
+  return `${header}${statBar}${exerciseCards}`;
 }
 
 // ── History view ──────────────────────────────────────────────────
