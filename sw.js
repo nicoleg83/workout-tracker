@@ -1,14 +1,15 @@
 const CACHE = 'workout-v11';
+const BASE = self.registration.scope;
 const SHELL = [
-  '/',
-  '/index.html',
-  '/styles.css',
-  '/app.js',
-  '/db.js',
-  '/supabase.js',
-  '/exercises.js',
-  '/illustrations.js',
-  '/manifest.json',
+  BASE,
+  BASE + 'index.html',
+  BASE + 'styles.css',
+  BASE + 'app.js',
+  BASE + 'db.js',
+  BASE + 'supabase.js',
+  BASE + 'exercises.js',
+  BASE + 'illustrations.js',
+  BASE + 'manifest.json',
 ];
 
 self.addEventListener('install', e => {
