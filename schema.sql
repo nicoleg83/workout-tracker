@@ -44,7 +44,33 @@ alter table exercises enable row level security;
 alter table sessions enable row level security;
 alter table set_logs enable row level security;
 
--- Permissive policies (tighten later with auth)
-create policy "Allow all on exercises" on exercises for all using (true) with check (true);
-create policy "Allow all on sessions" on sessions for all using (true) with check (true);
-create policy "Allow all on set_logs" on set_logs for all using (true) with check (true);
+-- Exercises are shared / read-only for all authenticated users
+drop policy if exists "Allow all on exercises" on exercises;
+create policy "Read exercises" on exercises for select using (true);
+create policy "Insert exercises" on exercises for insert with check (true);
+
+-- Sessions: each user can only see and write their own rows
+drop policy if exists "Allow all on sessions" on sessions;
+create policy "Users own sessions" on sessions
+  for all
+  using (auth.uid()::text = user_id)
+  with check (auth.uid()::text = user_id);
+
+-- Set logs: accessible if the parent session belongs to the user
+drop policy if exists "Allow all on set_logs" on set_logs;
+create policy "Users own set_logs" on set_logs
+  for all
+  using (
+    session_id in (
+      select id from sessions where user_id = auth.uid()::text
+    )
+  )
+  with check (
+    session_id in (
+      select id from sessions where user_id = auth.uid()::text
+    )
+  );
+
+-- NOTE: Run this in Supabase Dashboard → SQL Editor after adding auth.
+-- Also go to Authentication → Settings and disable "Confirm email" for
+-- personal use so accounts activate immediately without email verification.

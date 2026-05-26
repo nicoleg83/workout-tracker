@@ -1,6 +1,7 @@
 // ── State ────────────────────────────────────────────────────────
 const state = {
   tab: 'home',
+  user: null,
   exercises: [],
   sessions: [],
   activeSession: null,
@@ -20,7 +21,6 @@ const state = {
   seeding: false,
 };
 let timerInterval = null;
-const USER_ID = 'default';
 
 // ── Helpers ──────────────────────────────────────────────────────
 function uuid() { return crypto.randomUUID(); }
@@ -225,7 +225,7 @@ async function startSession(day) {
 
   const session = {
     id: uuid(),
-    user_id: USER_ID,
+    user_id: state.user?.id || 'default',
     day,
     date: today(),
     notes: null,
@@ -519,12 +519,18 @@ function renderHome() {
     </div>`;
   }).join('');
 
+  const userEmail = state.user?.email || '';
   return `
     <div class="page-header">
-      <div>
+      <div style="flex:1">
         <div class="page-title">Workout Tracker</div>
         <div class="page-subtitle">Push · Pull · Legs</div>
       </div>
+      <button class="logout-btn" onclick="handleLogout()" title="Sign out">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>
+        </svg>
+      </button>
     </div>
     ${inProgress}
     ${lastWidget}
@@ -577,7 +583,7 @@ function renderWorkout() {
       let thumb = '';
       if (!isNoteOnly) {
         thumb = IMAGE_KEYS.has(ex.image_key)
-          ? `<img class="exercise-thumb-img" src="icons/exercises/${ex.image_key}.png" alt="" loading="lazy" />`
+          ? `<img class="exercise-thumb-img" src="icons/exercises/${ex.image_key}.jpg" alt="" loading="lazy" />`
           : (ILLUSTRATIONS[ex.image_key] || ILLUSTRATIONS['_placeholder']).replace(/viewBox="[^"]*"/, 'viewBox="0 0 120 160"');
       } else {
         thumb = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>`;
@@ -593,12 +599,25 @@ function renderWorkout() {
         ? (note ? `<div class="exercise-row-meta" style="color:var(--text3);font-style:italic;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:160px">${note}</div>` : '<div class="exercise-row-meta">Tap to add notes</div>')
         : `<div class="exercise-row-meta">${ex.sets_target}×${ex.reps_target}${ex.weight_range ? ' · ' + ex.weight_range : ''}</div>`;
 
+      // Last session hint
+      const lastSets = (state.lastLogs[ex.id] || []).filter(s => s.completed);
+      let lastHint = '';
+      if (!isNoteOnly && lastSets.length > 0) {
+        const weight = lastSets.find(s => s.weight_lbs)?.weight_lbs;
+        const reps = lastSets.find(s => s.reps)?.reps;
+        const parts = [`${lastSets.length} sets`];
+        if (reps) parts.push(`${reps} reps`);
+        if (weight) parts.push(`${weight} lbs`);
+        lastHint = `<div class="exercise-row-last">Last: ${parts.join(' · ')}</div>`;
+      }
+
       html += `<div class="exercise-row ${allDone?'done':''} ${isSkipped?'skipped':''} ${isNoteOnly?'note-only':''}" data-ex-id="${ex.id}">
         <div class="drag-handle">⠿</div>
         <div class="exercise-row-thumb">${thumb}</div>
         <div class="exercise-row-info">
           <div class="exercise-row-name">${ex.name}</div>
           ${meta}
+          ${lastHint}
         </div>
         <div class="exercise-row-status">${statusEl}</div>
       </div>`;
@@ -1005,14 +1024,107 @@ function bindSetRowEvents(rowEl, exerciseId, i) {
   }
 }
 
+// ── Auth UI ───────────────────────────────────────────────────────
+function showLoginScreen(msg = '') {
+  document.getElementById('tab-bar').style.display = 'none';
+  document.getElementById('main-view').innerHTML = `
+    <div class="login-screen">
+      <div class="login-logo">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--pink)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M20.84 4.61a5.5 5.5 0 00-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 00-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 000-7.78z"/>
+        </svg>
+      </div>
+      <div class="login-title">Workout Tracker</div>
+      <div class="login-subtitle">Sign in to sync your workouts</div>
+      ${msg ? `<div class="login-msg">${msg}</div>` : ''}
+      <div id="login-error" class="login-error" style="display:none"></div>
+      <input id="login-email" type="email" class="login-input" placeholder="Email" autocomplete="email" inputmode="email" />
+      <input id="login-password" type="password" class="login-input" placeholder="Password (min 6 chars)" autocomplete="current-password" />
+      <button class="btn btn-primary" style="width:100%" onclick="handleLogin()">Sign In</button>
+      <button class="btn btn-secondary" style="width:100%;margin-top:8px" onclick="handleSignup()">Create Account</button>
+    </div>`;
+
+  // Allow enter key to submit
+  document.getElementById('main-view').addEventListener('keydown', e => {
+    if (e.key === 'Enter') handleLogin();
+  });
+}
+
+async function handleLogin() {
+  const email = document.getElementById('login-email')?.value?.trim();
+  const password = document.getElementById('login-password')?.value;
+  const errEl = document.getElementById('login-error');
+  if (!email || !password) { showLoginError('Enter your email and password.'); return; }
+  const btn = document.querySelector('.login-screen .btn-primary');
+  if (btn) { btn.disabled = true; btn.textContent = 'Signing in…'; }
+  try {
+    const session = await Supabase.signIn(email, password);
+    await finishAuth(session);
+  } catch (e) {
+    showLoginError(e.message || 'Sign in failed. Check your email and password.');
+    if (btn) { btn.disabled = false; btn.textContent = 'Sign In'; }
+  }
+}
+
+async function handleSignup() {
+  const email = document.getElementById('login-email')?.value?.trim();
+  const password = document.getElementById('login-password')?.value;
+  if (!email || !password) { showLoginError('Enter an email and password.'); return; }
+  if (password.length < 6) { showLoginError('Password must be at least 6 characters.'); return; }
+  const btn = document.querySelector('.login-screen .btn-secondary');
+  if (btn) { btn.disabled = true; btn.textContent = 'Creating account…'; }
+  try {
+    const result = await Supabase.signUp(email, password);
+    if (result?.access_token) {
+      await finishAuth(result);
+    } else {
+      // Email confirmation required
+      showLoginScreen('Account created! Check your email for a confirmation link, then sign in.');
+    }
+  } catch (e) {
+    showLoginError(e.message || 'Sign up failed.');
+    if (btn) { btn.disabled = false; btn.textContent = 'Create Account'; }
+  }
+}
+
+function showLoginError(msg) {
+  const el = document.getElementById('login-error');
+  if (!el) return;
+  el.textContent = msg;
+  el.style.display = 'block';
+}
+
+async function handleLogout() {
+  await Supabase.signOut();
+  state.user = null;
+  state.sessions = [];
+  state.exercises = [];
+  state.activeSession = null;
+  state.setLogs = {};
+  state.lastLogs = {};
+  showLoginScreen();
+}
+
+async function finishAuth(session) {
+  state.user = session.user;
+  document.getElementById('tab-bar').style.display = '';
+  document.getElementById('main-view').innerHTML = `<div class="loading"><div class="spinner"></div><div>Loading…</div></div>`;
+  await loadExercises();
+  await loadSessions();
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => setTab(btn.dataset.tab));
+  });
+  window.addEventListener('online', () => { updateSyncDot(); syncIfOnline(); });
+  window.addEventListener('offline', () => updateSyncDot());
+  renderView();
+  renderRestTimer();
+}
+
 // ── Init ──────────────────────────────────────────────────────────
 async function init() {
-  // Register SW
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/sw.js').catch(() => {});
+    navigator.serviceWorker.register('./sw.js').catch(() => {});
   }
-
-  // Request notification permission
   if ('Notification' in window && Notification.permission === 'default') {
     Notification.requestPermission();
   }
@@ -1020,18 +1132,21 @@ async function init() {
   await DB.open();
   updateSyncDot();
 
-  // Show loading
+  const session = await Supabase.restoreSession();
+  if (!session) {
+    showLoginScreen();
+    return;
+  }
+  state.user = session.user;
+
   document.getElementById('main-view').innerHTML = `<div class="loading"><div class="spinner"></div><div>Loading…</div></div>`;
 
   await loadExercises();
   await loadSessions();
 
-  // Wire tab buttons
   document.querySelectorAll('.tab-btn').forEach(btn => {
     btn.addEventListener('click', () => setTab(btn.dataset.tab));
   });
-
-  // Online/offline handlers
   window.addEventListener('online', () => { updateSyncDot(); syncIfOnline(); });
   window.addEventListener('offline', () => updateSyncDot());
 
