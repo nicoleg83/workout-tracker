@@ -140,8 +140,23 @@ async function loadSessions() {
       await DB.bulkPut('sessions', sessions);
     } catch (_) {}
   }
-  state.sessions = (await DB.getAll('sessions'))
-    .sort((a, b) => b.date.localeCompare(a.date));
+
+  const all = await DB.getAll('sessions');
+
+  // Remove orphaned sessions created before auth (user_id='default')
+  if (state.user?.id) {
+    const stale = all.filter(s => s.user_id !== state.user.id);
+    for (const s of stale) {
+      await DB.del('sessions', s.id);
+      const logs = await DB.getAll('set_logs', 'session_id', s.id);
+      for (const l of logs) await DB.del('set_logs', l.id);
+    }
+    state.sessions = all
+      .filter(s => s.user_id === state.user.id)
+      .sort((a, b) => b.date.localeCompare(a.date));
+  } else {
+    state.sessions = all.sort((a, b) => b.date.localeCompare(a.date));
+  }
 }
 
 async function loadLastLogs(day) {
@@ -831,21 +846,24 @@ async function openSessionDetail(sessionId) {
   const session = state.sessions.find(s => s.id === sessionId);
   if (!session) return;
   state.historySession = session;
-  state.historyLogs = null; // null = fetching
+  state.historyLogs = null;
   state.view = 'session-detail';
   renderView();
 
-  // Try Supabase first; if it returns nothing (e.g. old rows blocked by RLS),
-  // fall back to IndexedDB which always has local data.
-  let logs = [];
   try {
-    logs = await Supabase.getSetLogs(sessionId);
-  } catch (_) {}
-  if (!logs.length) {
-    logs = await DB.getAll('set_logs', 'session_id', sessionId);
+    let logs = [];
+    try { logs = await Supabase.getSetLogs(sessionId); } catch (_) {}
+    if (!logs.length) {
+      try { logs = await DB.getAll('set_logs', 'session_id', sessionId); } catch (_) {}
+    }
+    state.historyLogs = logs;
+  } catch (_) {
+    state.historyLogs = [];
+  } finally {
+    // Guarantee we never stay stuck on the loading screen
+    if (state.historyLogs === null) state.historyLogs = [];
+    if (state.view === 'session-detail') renderView();
   }
-  state.historyLogs = logs; // [] or [...rows] — never null after fetch
-  if (state.view === 'session-detail') renderView();
 }
 
 async function deleteSession(sessionId) {
