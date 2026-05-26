@@ -120,10 +120,15 @@ const Supabase = (() => {
     return restReq(`/set_logs?select=*&session_id=eq.${sessionId}&order=exercise_id,set_number`);
   }
 
-  async function getExerciseHistory(exerciseId) {
+  async function getExerciseHistory(exerciseIds) {
+    // Accept a single ID or an array (for name-based lookup across re-seeded IDs)
+    const ids = Array.isArray(exerciseIds) ? exerciseIds : [exerciseIds];
+    const filter = ids.length === 1
+      ? `exercise_id=eq.${ids[0]}`
+      : `exercise_id=in.(${ids.join(',')})`;
     return restReq(
-      `/set_logs?select=weight_lbs,reps,is_pr,logged_at,sessions(date)` +
-      `&exercise_id=eq.${exerciseId}&completed=eq.true&order=logged_at.desc&limit=50`
+      `/set_logs?select=weight_lbs,reps,is_pr,logged_at,session_id` +
+      `&${filter}&completed=eq.true&order=logged_at.desc&limit=50`
     );
   }
 

@@ -1,4 +1,4 @@
-const CACHE = 'workout-v19';
+const CACHE = 'workout-v21';
 const BASE = self.registration.scope;
 const SHELL = [
   BASE,
@@ -11,6 +11,9 @@ const SHELL = [
   BASE + 'illustrations.js',
   BASE + 'manifest.json',
 ];
+
+// JS and CSS files that should always be fresh when online
+const ALWAYS_FRESH = ['.js', '.css'];
 
 self.addEventListener('install', e => {
   e.waitUntil(
@@ -39,7 +42,22 @@ self.addEventListener('fetch', e => {
     return;
   }
 
-  // Cache-first for app shell
+  // Network-first for JS and CSS — ensures code changes are always picked up
+  const isScript = ALWAYS_FRESH.some(ext => url.pathname.endsWith(ext));
+  if (isScript) {
+    e.respondWith(
+      fetch(e.request).then(res => {
+        if (res.ok) {
+          const clone = res.clone();
+          caches.open(CACHE).then(c => c.put(e.request, clone));
+        }
+        return res;
+      }).catch(() => caches.match(e.request))
+    );
+    return;
+  }
+
+  // Cache-first for HTML and other static assets
   e.respondWith(
     caches.match(e.request).then(cached => cached || fetch(e.request).then(res => {
       if (res.ok) {

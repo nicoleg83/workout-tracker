@@ -26,12 +26,18 @@ let timerInterval = null;
 
 // ── Helpers ──────────────────────────────────────────────────────
 function uuid() { return crypto.randomUUID(); }
-function today() { return new Date().toISOString().slice(0, 10); }
+function today() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
 function fmtDate(d) {
   return new Date(d + 'T00:00:00').toLocaleDateString('en-US', { weekday:'short', month:'short', day:'numeric' });
 }
 function daysAgo(d) {
-  const diff = Math.round((Date.now() - new Date(d + 'T00:00:00').getTime()) / 86400000);
+  // Compare midnight-to-midnight so "Today" never flips to "Yesterday" mid-day
+  const todayMs = new Date(today() + 'T00:00:00').getTime();
+  const dMs = new Date(d + 'T00:00:00').getTime();
+  const diff = Math.round((todayMs - dMs) / 86400000);
   if (diff === 0) return 'Today';
   if (diff === 1) return 'Yesterday';
   return `${diff} days ago`;
@@ -282,6 +288,38 @@ async function finishSession() {
 }
 
 async function endAndGoHome() {
+  // Auto-discard sessions where nothing was logged
+  if (state.activeSession) {
+    const hasLogs = state.sessionExercises.some(ex =>
+      (state.setLogs[ex.id] || []).some(s => s.completed)
+    );
+    if (!hasLogs) {
+      const logs = await DB.getAll('set_logs', 'session_id', state.activeSession.id);
+      for (const log of logs) await DB.del('set_logs', log.id);
+      await DB.del('sessions', state.activeSession.id);
+      try { await Supabase.deleteRecord('sessions', state.activeSession.id); } catch (_) {}
+    }
+  }
+  state.activeSession = null;
+  state.setLogs = {};
+  state.skipped = new Set();
+  state.activeDay = null;
+  state.sessionExercises = [];
+  state.defaultExerciseIds = [];
+  state.exerciseNotes = {};
+  stopRestTimer();
+  await loadSessions();
+  setTab('home');
+}
+
+async function cancelSession() {
+  if (!confirm('Cancel this workout? All logged progress will be lost.')) return;
+  if (state.activeSession) {
+    const logs = await DB.getAll('set_logs', 'session_id', state.activeSession.id);
+    for (const log of logs) await DB.del('set_logs', log.id);
+    await DB.del('sessions', state.activeSession.id);
+    try { await Supabase.deleteRecord('sessions', state.activeSession.id); } catch (_) {}
+  }
   state.activeSession = null;
   state.setLogs = {};
   state.skipped = new Set();
@@ -337,10 +375,16 @@ async function toggleComplete(exerciseId, setIndex) {
 }
 
 async function checkPR(exerciseId, weightLbs, reps) {
-  if (!weightLbs) return false;
+  if (!weightLbs || parseFloat(weightLbs) <= 0) return false;
   try {
-    const history = await Supabase.getExerciseHistory(exerciseId);
-    const maxWeight = Math.max(0, ...history.map(l => l.weight_lbs || 0));
+    const ex = state.exercises.find(e => e.id === exerciseId);
+    const ids = ex
+      ? state.exercises.filter(e => e.name === ex.name).map(e => e.id)
+      : [exerciseId];
+    const history = await Supabase.getExerciseHistory(ids);
+    const past = history.filter(l => l.session_id !== state.activeSession?.id);
+    if (!past.length) return true; // First time doing this exercise = PR
+    const maxWeight = Math.max(0, ...past.map(l => l.weight_lbs || 0));
     return parseFloat(weightLbs) > maxWeight;
   } catch (_) {
     return false;
@@ -399,7 +443,12 @@ async function loadProgress(exerciseId) {
   state.progressExerciseId = exerciseId;
   state.progressHistory = [];
   try {
-    const raw = await Supabase.getExerciseHistory(exerciseId);
+    const ex = state.exercises.find(e => e.id === exerciseId);
+    // Pass all IDs sharing the same name — guards against re-seeded exercise UUIDs
+    const ids = ex
+      ? state.exercises.filter(e => e.name === ex.name).map(e => e.id)
+      : [exerciseId];
+    const raw = await Supabase.getExerciseHistory(ids);
     state.progressHistory = raw.sort((a,b) => a.logged_at.localeCompare(b.logged_at));
   } catch (_) {}
   renderView();
@@ -499,6 +548,13 @@ function renderView() {
 
 // ── Home view ────────────────────────────────────────────────────
 function renderHome() {
+  const days = [
+    { day: 'Day 1', name: 'Push', muscles: 'Chest · Shoulders · Triceps', color: '#E91E8C' },
+    { day: 'Day 2', name: 'Pull', muscles: 'Back · Biceps · Rear Delts', color: '#9C27B0' },
+    { day: 'Day 3', name: 'Legs', muscles: 'Glutes · Hamstrings · Quads', color: '#3F51B5' },
+  ];
+  const dayNameMap = Object.fromEntries(days.map(d => [d.day, d.name]));
+
   const last = state.sessions[0];
   const lastWidget = last ? `
     <div class="last-workout-widget">
@@ -509,21 +565,16 @@ function renderHome() {
         </svg>
       </div>
       <div class="last-workout-text">
-        <strong>${last.day}</strong>
-        <span>${daysAgo(last.date)}</span>
+        <div style="font-size:11px;color:var(--text3);font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Last workout</div>
+        <strong>${last.day}${dayNameMap[last.day] ? ' — ' + dayNameMap[last.day] : ''}</strong>
+        <span>${daysAgo(last.date)} · ${fmtDate(last.date)}</span>
       </div>
     </div>` : '';
-
-  const days = [
-    { day: 'Day 1', name: 'Push', muscles: 'Chest · Shoulders · Triceps', color: '#E91E8C' },
-    { day: 'Day 2', name: 'Pull', muscles: 'Back · Biceps · Rear Delts', color: '#9C27B0' },
-    { day: 'Day 3', name: 'Legs', muscles: 'Glutes · Hamstrings · Quads', color: '#3F51B5' },
-  ];
 
   const inProgress = state.activeSession ? `
     <div class="card mb16" style="border-color: var(--pink);">
       <div style="font-size:12px;color:var(--pink);font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;">Workout in progress</div>
-      <div style="font-size:16px;font-weight:700;margin-bottom:12px;">${state.activeSession.day} — ${days.find(d=>d.day===state.activeSession.day)?.name}</div>
+      <div style="font-size:16px;font-weight:700;margin-bottom:12px;">${state.activeSession.day} — ${dayNameMap[state.activeSession.day] || ''}</div>
       <button class="btn btn-primary" onclick="navigateTo('workout')">Resume</button>
     </div>` : '';
 
@@ -565,7 +616,7 @@ function renderWorkout() {
 
   let html = `
     <div class="page-header">
-      <button class="back-btn" onclick="setTab('home')">
+      <button class="back-btn" onclick="endAndGoHome()">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
       </button>
       <div style="flex:1">
@@ -616,7 +667,7 @@ function renderWorkout() {
 
       const meta = isNoteOnly
         ? (note ? `<div class="exercise-row-meta" style="color:var(--text3);font-style:italic;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:160px">${note}</div>` : '<div class="exercise-row-meta">Tap to add notes</div>')
-        : `<div class="exercise-row-meta">${ex.sets_target}×${ex.reps_target}${ex.weight_range ? ' · ' + ex.weight_range : ''}</div>`;
+        : `<div class="exercise-row-meta">${ex.sets_target}×${ex.reps_target}${ex.weight_range ? ' · ' + startingWeight(ex.weight_range) : ''}</div>`;
 
       // Last session hint
       const lastSets = (state.lastLogs[ex.id] || []).filter(s => s.completed);
@@ -650,7 +701,8 @@ function renderWorkout() {
     <div style="margin-top:16px;">
       <button class="btn btn-primary" onclick="finishSession()">Finish Workout</button>
       <div class="btn-row mt8">
-        <button class="btn btn-ghost" onclick="setTab('home')">Save &amp; Exit</button>
+        <button class="btn btn-ghost" onclick="endAndGoHome()">Save &amp; Exit</button>
+        <button class="btn btn-danger" onclick="cancelSession()">Cancel</button>
       </div>
     </div>`;
 
@@ -684,14 +736,13 @@ function renderExerciseDetail() {
   if (!isNoteOnly && ex.image_key) mediaEl = getExerciseMedia(ex.image_key);
 
   let infoCard = '';
-  if (!isNoteOnly && (instructions || equipChips)) {
+  if (!isNoteOnly && (instructions || equipChips || ex.weight_range)) {
     infoCard = `<div class="card">
-      ${equipChips ? `<div class="detail-section-label">Equipment</div><div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;">${equipChips}</div>` : ''}
+      ${(equipChips || ex.weight_range) ? `<div class="detail-section-label">Equipment</div><div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;">${equipChips}${ex.weight_range ? `<span class="tag tag-muted">~${startingWeight(ex.weight_range)}</span>` : ''}</div>` : ''}
       ${instructions ? `<div class="detail-section-label">Instructions</div><ol class="instructions-list">${instructions}</ol>` : ''}
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;">
         <span class="tag">${ex.sets_target} sets</span>
         ${ex.reps_target ? `<span class="tag">${ex.reps_target} reps</span>` : ''}
-        ${ex.weight_range ? `<span class="tag tag-muted">Starting: ${startingWeight(ex.weight_range)}</span>` : ''}
       </div>
     </div>`;
   }
@@ -725,7 +776,6 @@ function renderExerciseDetail() {
       </button>
       <div style="flex:1">
         ${nameEl}
-        ${ex.weight_range && !isNoteOnly ? `<div class="page-subtitle">Suggested starting weight: ${startingWeight(ex.weight_range)}</div>` : ''}
       </div>
     </div>
     ${mediaEl}
@@ -818,7 +868,7 @@ function renderProgress() {
   if (state.progressExerciseId && state.progressHistory.length > 0) {
     const rows = state.progressHistory.map(l => `
       <tr class="${l.is_pr?'pr':''}">
-        <td>${l.sessions?.date ? fmtDate(l.sessions.date) : '—'}</td>
+        <td>${l.logged_at ? fmtDate(l.logged_at.slice(0,10)) : '—'}</td>
         <td>${l.weight_lbs ?? '—'}</td>
         <td>${l.reps ?? '—'}${l.is_pr?'<span class="pr-badge">PR</span>':''}</td>
       </tr>`).join('');
@@ -1268,6 +1318,7 @@ async function finishAuth(session) {
   state.user = session.user;
   document.getElementById('tab-bar').style.display = '';
   document.getElementById('main-view').innerHTML = `<div class="loading"><div class="spinner"></div><div>Loading…</div></div>`;
+  await syncIfOnline();
   await loadExercises();
   await loadSessions();
   document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -1300,6 +1351,7 @@ async function init() {
 
   document.getElementById('main-view').innerHTML = `<div class="loading"><div class="spinner"></div><div>Loading…</div></div>`;
 
+  await syncIfOnline(); // Flush any pending syncs before loading
   await loadExercises();
   await loadSessions();
 
