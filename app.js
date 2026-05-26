@@ -132,17 +132,14 @@ async function seedExercises() {
 }
 
 async function loadSessions() {
-  if (!navigator.onLine) {
-    state.sessions = await DB.getAll('sessions');
-    return;
+  if (navigator.onLine) {
+    try {
+      const sessions = await Supabase.getSessions();
+      await DB.bulkPut('sessions', sessions);
+    } catch (_) {}
   }
-  try {
-    const sessions = await Supabase.getSessions();
-    await DB.bulkPut('sessions', sessions);
-    state.sessions = sessions;
-  } catch (_) {
-    state.sessions = await DB.getAll('sessions');
-  }
+  state.sessions = (await DB.getAll('sessions'))
+    .sort((a, b) => b.date.localeCompare(a.date));
 }
 
 async function loadLastLogs(day) {
@@ -314,9 +311,6 @@ async function toggleComplete(exerciseId, setIndex) {
     syncIfOnline();
 
     if (set.is_pr) toast('🏆 New personal record!', 'success');
-
-    // Start rest timer automatically after completing a set
-    startRestTimer(state.restTimer.duration);
   }
 
   updateSyncDot();
