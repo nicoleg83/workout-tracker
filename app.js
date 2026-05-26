@@ -1,0 +1,1048 @@
+// ── State ────────────────────────────────────────────────────────
+const state = {
+  tab: 'home',
+  exercises: [],
+  sessions: [],
+  activeSession: null,
+  activeDay: null,
+  sessionExercises: [],
+  defaultExerciseIds: [],
+  setLogs: {},
+  lastLogs: {},
+  skipped: new Set(),
+  exerciseNotes: {},
+  restTimer: { active: false, remaining: 0, duration: 60, exerciseName: '' },
+  progressExerciseId: null,
+  progressHistory: [],
+  view: 'home',
+  detailExercise: null,
+  loading: false,
+  seeding: false,
+};
+let timerInterval = null;
+const USER_ID = 'default';
+
+// ── Helpers ──────────────────────────────────────────────────────
+function uuid() { return crypto.randomUUID(); }
+function today() { return new Date().toISOString().slice(0, 10); }
+function fmtDate(d) {
+  return new Date(d + 'T00:00:00').toLocaleDateString('en-US', { weekday:'short', month:'short', day:'numeric' });
+}
+function daysAgo(d) {
+  const diff = Math.round((Date.now() - new Date(d + 'T00:00:00').getTime()) / 86400000);
+  if (diff === 0) return 'Today';
+  if (diff === 1) return 'Yesterday';
+  return `${diff} days ago`;
+}
+function chunk(arr, n) {
+  const out = [];
+  for (let i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n));
+  return out;
+}
+function startingWeight(range) {
+  if (!range) return '';
+  const parts = range.split('→');
+  if (parts.length < 2) return range;
+  const low = parts[0].trim();
+  return /^\d+(\.\d+)?$/.test(low) ? `${low} lbs` : low;
+}
+function buildSectionGroups(exercises) {
+  const groups = [];
+  const idx = {};
+  for (const ex of exercises) {
+    const s = ex.section || 'Other';
+    if (!(s in idx)) { idx[s] = groups.length; groups.push({ section: s, exercises: [] }); }
+    groups[idx[s]].exercises.push(ex);
+  }
+  return groups;
+}
+function rebuildSessionExercisesFromDOM() {
+  const view = document.getElementById('main-view');
+  if (!view) return;
+  const newOrder = [];
+  view.querySelectorAll('#section-sortable .section-group').forEach(group => {
+    group.querySelectorAll('.exercise-row[data-ex-id]').forEach(row => {
+      const ex = state.sessionExercises.find(e => e.id === row.dataset.exId);
+      if (ex) newOrder.push(ex);
+    });
+  });
+  if (newOrder.length) state.sessionExercises = newOrder;
+}
+function resetExerciseOrder() {
+  const ids = state.defaultExerciseIds;
+  if (!ids.length) return;
+  const byId = new Map(state.sessionExercises.map(e => [e.id, e]));
+  const reordered = ids.map(id => byId.get(id)).filter(Boolean);
+  const defaultSet = new Set(ids);
+  const extras = state.sessionExercises.filter(e => !defaultSet.has(e.id));
+  state.sessionExercises = [...reordered, ...extras];
+  renderView();
+}
+
+// ── Toast ────────────────────────────────────────────────────────
+function toast(msg, type = '') {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = `show ${type}`;
+  setTimeout(() => { el.className = ''; }, 2500);
+}
+
+// ── Sync dot ─────────────────────────────────────────────────────
+function updateSyncDot() {
+  const dot = document.getElementById('sync-dot');
+  if (!dot) return;
+  if (!navigator.onLine) { dot.className = 'offline'; return; }
+  DB.count('pending_sync').then(n => {
+    dot.className = n > 0 ? 'pending' : '';
+  });
+}
+
+// ── Data bootstrap ───────────────────────────────────────────────
+async function loadExercises() {
+  let exs = await DB.getAll('exercises');
+  if (exs.length > 0) { state.exercises = exs; return; }
+
+  if (!navigator.onLine) {
+    // Offline with no cache: use bundled static data as fallback
+    state.exercises = EXERCISES.map((e, i) => ({ ...e, id: `local-${i}` }));
+    return;
+  }
+
+  try {
+    exs = await Supabase.getExercises();
+    if (exs.length === 0) {
+      await seedExercises();
+      exs = await Supabase.getExercises();
+    }
+    await DB.bulkPut('exercises', exs);
+    state.exercises = exs;
+  } catch (err) {
+    state.exercises = EXERCISES.map((e, i) => ({ ...e, id: `local-${i}` }));
+  }
+}
+
+async function seedExercises() {
+  state.seeding = true;
+  renderSeedingOverlay();
+  const batches = chunk(EXERCISES, 25);
+  for (const batch of batches) {
+    try { await Supabase.insertExercises(batch); } catch (_) {}
+  }
+  state.seeding = false;
+}
+
+async function loadSessions() {
+  if (!navigator.onLine) {
+    state.sessions = await DB.getAll('sessions');
+    return;
+  }
+  try {
+    const sessions = await Supabase.getSessions();
+    await DB.bulkPut('sessions', sessions);
+    state.sessions = sessions;
+  } catch (_) {
+    state.sessions = await DB.getAll('sessions');
+  }
+}
+
+async function loadLastLogs(day) {
+  const sessionsByDay = state.sessions
+    .filter(s => s.day === day)
+    .sort((a, b) => b.date.localeCompare(a.date));
+
+  if (!sessionsByDay.length) return;
+  const lastSession = sessionsByDay[0];
+  if (state.activeSession && lastSession.id === state.activeSession.id) {
+    if (sessionsByDay.length < 2) return;
+    // Use the one before current
+  }
+
+  let logs;
+  try {
+    logs = await Supabase.getSetLogs(lastSession.id);
+  } catch (_) {
+    logs = await DB.getAll('set_logs', 'session_id', lastSession.id);
+  }
+
+  state.lastLogs = {};
+  for (const log of logs) {
+    if (!state.lastLogs[log.exercise_id]) state.lastLogs[log.exercise_id] = [];
+    state.lastLogs[log.exercise_id].push(log);
+  }
+}
+
+// ── Init set logs for a session ──────────────────────────────────
+function initSetLogs(exercises) {
+  state.setLogs = {};
+  for (const ex of exercises) {
+    if (!ex.sets_target) { state.setLogs[ex.id] = []; continue; }
+    const last = state.lastLogs[ex.id] || [];
+    const rows = [];
+    for (let i = 0; i < ex.sets_target; i++) {
+      const prev = last.find(l => l.set_number === i + 1);
+      rows.push({
+        setNumber: i + 1,
+        weight_lbs: prev ? prev.weight_lbs : null,
+        reps: prev ? prev.reps : null,
+        completed: false,
+        is_pr: false,
+      });
+    }
+    state.setLogs[ex.id] = rows;
+  }
+}
+
+// ── Navigation ───────────────────────────────────────────────────
+function setTab(tab) {
+  state.tab = tab;
+  state.view = tab;
+  document.querySelectorAll('.tab-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.tab === tab);
+  });
+  renderView();
+}
+
+function navigateTo(view, data = {}) {
+  state.view = view;
+  if (data.exercise) state.detailExercise = data.exercise;
+  if (data.day) state.activeDay = data.day;
+  renderView();
+}
+
+// ── Session management ───────────────────────────────────────────
+function makeWarmup(day, sessionId) {
+  return { id: `warmup-${sessionId}`, name: 'Warmup', day, section: 'Warmup', sets_target: 0, reps_target: '', weight_range: '', equipment: '', instructions: [], image_key: null, superset_group: null, sort_order: -1, _custom: true };
+}
+function makeAbs(day, sessionId) {
+  return { id: `abs-${sessionId}`, name: 'Abs', day, section: 'Abs', sets_target: 0, reps_target: '', weight_range: '', equipment: '', instructions: [], image_key: null, superset_group: null, sort_order: 9999, _custom: true };
+}
+function makeCustomExercise(day, sessionId, idx) {
+  return { id: `custom-${sessionId}-${idx}`, name: 'New Exercise', day, section: 'Custom', sets_target: 3, reps_target: '10', weight_range: '', equipment: '', instructions: [], image_key: null, superset_group: null, sort_order: 9000 + idx, _custom: true };
+}
+
+async function startSession(day) {
+  const base = state.exercises.filter(e => e.day === day).sort((a,b) => a.sort_order - b.sort_order);
+  await loadLastLogs(day);
+  state.skipped = new Set();
+  state.exerciseNotes = {};
+
+  const session = {
+    id: uuid(),
+    user_id: USER_ID,
+    day,
+    date: today(),
+    notes: null,
+    created_at: new Date().toISOString(),
+    synced_at: new Date().toISOString(),
+  };
+  state.activeSession = session;
+  state.activeDay = day;
+
+  state.sessionExercises = [
+    makeWarmup(day, session.id),
+    ...base,
+    makeAbs(day, session.id),
+  ];
+  state.defaultExerciseIds = state.sessionExercises.map(e => e.id);
+  initSetLogs(state.sessionExercises);
+
+  await DB.put('sessions', session);
+  await DB.queueSync('sessions', 'insert', session);
+  syncIfOnline();
+
+  state.view = 'workout';
+  renderView();
+}
+
+async function finishSession() {
+  const exercises = currentDayExercises();
+  const counted = exercises.filter(ex => !state.skipped.has(ex.id) && !isExerciseEmpty(ex.id));
+  const completedSets = counted.flatMap(ex =>
+    (state.setLogs[ex.id] || []).filter(s => s.completed)
+  ).length;
+  const totalSets = counted.flatMap(ex => state.setLogs[ex.id] || []).length;
+
+  state.view = 'summary';
+  state.summaryData = { completedSets, totalSets, exercises };
+  renderView();
+}
+
+async function endAndGoHome() {
+  state.activeSession = null;
+  state.setLogs = {};
+  state.skipped = new Set();
+  state.activeDay = null;
+  state.sessionExercises = [];
+  state.defaultExerciseIds = [];
+  state.exerciseNotes = {};
+  stopRestTimer();
+  await loadSessions();
+  setTab('home');
+}
+
+// ── Set logging ──────────────────────────────────────────────────
+async function updateSet(exerciseId, setIndex, field, value) {
+  if (!state.setLogs[exerciseId]) return;
+  state.setLogs[exerciseId][setIndex][field] = value;
+}
+
+async function toggleComplete(exerciseId, setIndex) {
+  const set = state.setLogs[exerciseId]?.[setIndex];
+  if (!set) return;
+  set.completed = !set.completed;
+
+  if (set.completed) {
+    // Check for PR
+    const ex = state.exercises.find(e => e.id === exerciseId);
+    set.is_pr = await checkPR(exerciseId, set.weight_lbs, set.reps);
+
+    const log = {
+      id: uuid(),
+      session_id: state.activeSession.id,
+      exercise_id: exerciseId,
+      set_number: set.setNumber,
+      weight_lbs: set.weight_lbs ? parseFloat(set.weight_lbs) : null,
+      reps: set.reps ? parseInt(set.reps) : null,
+      completed: true,
+      is_pr: set.is_pr,
+      notes: null,
+      logged_at: new Date().toISOString(),
+      synced_at: new Date().toISOString(),
+    };
+    await DB.put('set_logs', log);
+    await DB.queueSync('set_logs', 'insert', log);
+    syncIfOnline();
+
+    if (set.is_pr) toast('🏆 New personal record!', 'success');
+
+    // Start rest timer automatically after completing a set
+    startRestTimer(state.restTimer.duration);
+  }
+
+  updateSyncDot();
+  // Re-render just the set row
+  const row = document.querySelector(`.set-row[data-ex-id="${exerciseId}"][data-set-idx="${setIndex}"]`);
+  if (row) renderSetRow(exerciseId, setIndex, row);
+}
+
+async function checkPR(exerciseId, weightLbs, reps) {
+  if (!weightLbs) return false;
+  try {
+    const history = await Supabase.getExerciseHistory(exerciseId);
+    const maxWeight = Math.max(0, ...history.map(l => l.weight_lbs || 0));
+    return parseFloat(weightLbs) > maxWeight;
+  } catch (_) {
+    return false;
+  }
+}
+
+function skipExercise(exerciseId) {
+  if (state.skipped.has(exerciseId)) {
+    state.skipped.delete(exerciseId);
+  } else {
+    state.skipped.add(exerciseId);
+  }
+  renderView();
+}
+
+// ── Rest timer ───────────────────────────────────────────────────
+function startRestTimer(duration) {
+  stopRestTimer();
+  state.restTimer = { active: true, remaining: duration, duration, exerciseName: '' };
+  renderRestTimer();
+  timerInterval = setInterval(() => {
+    state.restTimer.remaining -= 1;
+    if (state.restTimer.remaining <= 0) {
+      stopRestTimer();
+      notifyTimerDone();
+    } else {
+      renderRestTimer();
+    }
+  }, 1000);
+}
+
+function stopRestTimer() {
+  clearInterval(timerInterval);
+  timerInterval = null;
+  state.restTimer.active = false;
+  renderRestTimer();
+}
+
+function notifyTimerDone() {
+  toast('Rest time done — next set!', 'success');
+  if ('Notification' in window && Notification.permission === 'granted') {
+    new Notification('Rest done!', { body: 'Time for your next set.' });
+  }
+}
+
+function setTimerDuration(sec) {
+  state.restTimer.duration = sec;
+  if (state.restTimer.active) startRestTimer(sec);
+  document.querySelectorAll('.timer-opt').forEach(el => {
+    el.classList.toggle('active', parseInt(el.dataset.sec) === sec);
+  });
+}
+
+// ── Progress ─────────────────────────────────────────────────────
+async function loadProgress(exerciseId) {
+  state.progressExerciseId = exerciseId;
+  state.progressHistory = [];
+  try {
+    const raw = await Supabase.getExerciseHistory(exerciseId);
+    state.progressHistory = raw.sort((a,b) => a.logged_at.localeCompare(b.logged_at));
+  } catch (_) {}
+  renderView();
+}
+
+// ── Sync ─────────────────────────────────────────────────────────
+async function syncIfOnline() {
+  if (!navigator.onLine) return;
+  try { await DB.flushSync(); } catch (_) {}
+  updateSyncDot();
+}
+
+// ── Render helpers ───────────────────────────────────────────────
+function currentDayExercises() {
+  if (state.sessionExercises.length > 0) return state.sessionExercises;
+  return state.exercises
+    .filter(e => e.day === state.activeDay)
+    .sort((a,b) => a.sort_order - b.sort_order);
+}
+
+function addCustomExercise() {
+  const idx = state.sessionExercises.filter(e => e._custom && e.name !== 'Warmup' && e.name !== 'Abs').length;
+  const ex = makeCustomExercise(state.activeDay, state.activeSession.id, idx);
+  // Insert before Abs
+  const absIdx = state.sessionExercises.findIndex(e => e.name === 'Abs');
+  if (absIdx >= 0) state.sessionExercises.splice(absIdx, 0, ex);
+  else state.sessionExercises.push(ex);
+  state.setLogs[ex.id] = Array.from({length: ex.sets_target}, (_, i) => ({ setNumber: i+1, weight_lbs: null, reps: null, completed: false, is_pr: false }));
+  renderView();
+}
+
+function toggleSuperset(exerciseId) {
+  const ex = state.sessionExercises.find(e => e.id === exerciseId);
+  if (!ex) return;
+  if (ex.superset_group) {
+    ex.superset_group = null;
+  } else {
+    // Group with adjacent exercise
+    const idx = state.sessionExercises.indexOf(ex);
+    const neighbor = state.sessionExercises[idx - 1] || state.sessionExercises[idx + 1];
+    const group = neighbor?.superset_group || `superset-custom-${Date.now()}`;
+    ex.superset_group = group;
+    if (neighbor && !neighbor.superset_group) neighbor.superset_group = group;
+  }
+  renderView();
+  // Navigate back to detail so user sees the change
+  navigateTo('exercise-detail', { exercise: state.sessionExercises.find(e => e.id === exerciseId) });
+}
+
+function saveExerciseNote(exerciseId, note) {
+  state.exerciseNotes[exerciseId] = note;
+}
+
+function isExerciseEmpty(exId) {
+  const logs = state.setLogs[exId] || [];
+  return logs.length > 0 && !logs.some(s => s.completed || s.weight_lbs || s.reps);
+}
+
+function exerciseProgress(exercises) {
+  let done = 0, total = 0;
+  for (const ex of exercises) {
+    if (state.skipped.has(ex.id) || isExerciseEmpty(ex.id)) continue;
+    const logs = state.setLogs[ex.id] || [];
+    done += logs.filter(s => s.completed).length;
+    total += logs.length;
+  }
+  return { done, total, pct: total ? Math.round((done/total)*100) : 0 };
+}
+
+// ── Seeding overlay ──────────────────────────────────────────────
+function renderSeedingOverlay() {
+  const el = document.getElementById('main-view');
+  if (el) el.innerHTML = `
+    <div class="loading">
+      <div class="spinner"></div>
+      <div>Setting up your workout data…</div>
+    </div>`;
+}
+
+// ── Main render ──────────────────────────────────────────────────
+function renderView() {
+  const el = document.getElementById('main-view');
+  if (!el) return;
+  switch (state.view) {
+    case 'home':     el.innerHTML = renderHome(); break;
+    case 'workout':  el.innerHTML = renderWorkout(); break;
+    case 'exercise-detail': el.innerHTML = renderExerciseDetail(); break;
+    case 'summary':  el.innerHTML = renderSummary(); break;
+    case 'progress': el.innerHTML = renderProgress(); break;
+    case 'history':  el.innerHTML = renderHistory(); break;
+    default:         el.innerHTML = renderHome();
+  }
+  el.scrollTop = 0;
+  bindViewEvents();
+}
+
+// ── Home view ────────────────────────────────────────────────────
+function renderHome() {
+  const last = state.sessions[0];
+  const lastWidget = last ? `
+    <div class="last-workout-widget">
+      <div class="last-workout-dot">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+          <path d="M12 2v10l4 2"/>
+          <circle cx="12" cy="12" r="10"/>
+        </svg>
+      </div>
+      <div class="last-workout-text">
+        <strong>${last.day}</strong>
+        <span>${daysAgo(last.date)}</span>
+      </div>
+    </div>` : '';
+
+  const days = [
+    { day: 'Day 1', name: 'Push', muscles: 'Chest · Shoulders · Triceps', color: '#E91E8C' },
+    { day: 'Day 2', name: 'Pull', muscles: 'Back · Biceps · Rear Delts', color: '#9C27B0' },
+    { day: 'Day 3', name: 'Legs', muscles: 'Glutes · Hamstrings · Quads', color: '#3F51B5' },
+  ];
+
+  const inProgress = state.activeSession ? `
+    <div class="card mb16" style="border-color: var(--pink);">
+      <div style="font-size:12px;color:var(--pink);font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;">Workout in progress</div>
+      <div style="font-size:16px;font-weight:700;margin-bottom:12px;">${state.activeSession.day} — ${days.find(d=>d.day===state.activeSession.day)?.name}</div>
+      <button class="btn btn-primary" onclick="navigateTo('workout')">Resume</button>
+    </div>` : '';
+
+  const cards = days.map(({ day, name, muscles }) => {
+    const count = state.exercises.filter(e => e.day === day).length;
+    return `<div class="day-card" data-day="${day}">
+      <div class="day-card-label">${day}</div>
+      <div class="day-card-name">${name}</div>
+      <div class="day-card-meta">${muscles} · ${count} exercises</div>
+      <button class="day-card-start" data-day-start="${day}">${state.activeSession?.day === day ? 'Resume Workout' : 'Start Workout'}</button>
+    </div>`;
+  }).join('');
+
+  return `
+    <div class="page-header">
+      <div>
+        <div class="page-title">Workout Tracker</div>
+        <div class="page-subtitle">Push · Pull · Legs</div>
+      </div>
+    </div>
+    ${inProgress}
+    ${lastWidget}
+    <div class="day-cards">${cards}</div>`;
+}
+
+// ── Workout view ─────────────────────────────────────────────────
+function renderWorkout() {
+  const exercises = currentDayExercises();
+  const prog = exerciseProgress(exercises);
+  const dayNames = { 'Day 1':'Push', 'Day 2':'Pull', 'Day 3':'Legs' };
+  const groups = buildSectionGroups(exercises);
+
+  let html = `
+    <div class="page-header">
+      <button class="back-btn" onclick="setTab('home')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+      </button>
+      <div style="flex:1">
+        <div class="page-title">${state.activeDay} — ${dayNames[state.activeDay]}</div>
+        <div class="page-subtitle">${fmtDate(state.activeSession?.date || today())}</div>
+      </div>
+      <button class="reset-order-btn" onclick="resetExerciseOrder()">Reset order</button>
+    </div>
+    <div class="workout-progress">
+      <div class="workout-progress-bar-wrap">
+        <div class="workout-progress-bar" style="width:${prog.pct}%"></div>
+      </div>
+      <div class="workout-progress-label">${prog.done} / ${prog.total} sets completed</div>
+    </div>
+    <div id="section-sortable">`;
+
+  for (const { section, exercises: groupExs } of groups) {
+    const displaySection = section === 'Warmup + core' ? 'Compound Lifts' : section;
+    html += `<div class="section-group" data-section="${section}">
+      <div class="section-label section-draggable">
+        <span class="section-drag-handle">⠿</span>
+        ${displaySection}
+      </div>
+      <div class="exercise-sortable-inner">`;
+
+    for (const ex of groupExs) {
+      const logs = state.setLogs[ex.id] || [];
+      const completed = logs.filter(s => s.completed).length;
+      const allDone = ex.sets_target > 0 && completed === logs.length && logs.length > 0;
+      const isSkipped = state.skipped.has(ex.id);
+      const isNoteOnly = ex.sets_target === 0;
+      const note = state.exerciseNotes[ex.id] || '';
+
+      let thumb = '';
+      if (!isNoteOnly) {
+        thumb = IMAGE_KEYS.has(ex.image_key)
+          ? `<img class="exercise-thumb-img" src="icons/exercises/${ex.image_key}.png" alt="" loading="lazy" />`
+          : (ILLUSTRATIONS[ex.image_key] || ILLUSTRATIONS['_placeholder']).replace(/viewBox="[^"]*"/, 'viewBox="0 0 120 160"');
+      } else {
+        thumb = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>`;
+      }
+
+      const statusEl = isNoteOnly
+        ? (note ? '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="2.5" stroke-linecap="round"><path d="M20 6L9 17l-5-5"/></svg>' : '')
+        : (allDone ? '<svg class="check-icon" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M20 6L9 17l-5-5"/></svg>'
+            : isSkipped ? '<svg class="skip-icon" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6l-12 12M6 6l12 12"/></svg>'
+            : `<span style="font-size:13px;color:var(--text3)">${completed}/${logs.length}</span>`);
+
+      const meta = isNoteOnly
+        ? (note ? `<div class="exercise-row-meta" style="color:var(--text3);font-style:italic;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:160px">${note}</div>` : '<div class="exercise-row-meta">Tap to add notes</div>')
+        : `<div class="exercise-row-meta">${ex.sets_target}×${ex.reps_target}${ex.weight_range ? ' · ' + ex.weight_range : ''}</div>`;
+
+      html += `<div class="exercise-row ${allDone?'done':''} ${isSkipped?'skipped':''} ${isNoteOnly?'note-only':''}" data-ex-id="${ex.id}">
+        <div class="drag-handle">⠿</div>
+        <div class="exercise-row-thumb">${thumb}</div>
+        <div class="exercise-row-info">
+          <div class="exercise-row-name">${ex.name}</div>
+          ${meta}
+        </div>
+        <div class="exercise-row-status">${statusEl}</div>
+      </div>`;
+    }
+
+    html += `</div></div>`;
+  }
+
+  html += `</div>
+    <button class="add-exercise-btn" onclick="addCustomExercise()">+ Add exercise</button>
+    <div style="margin-top:16px;">
+      <button class="btn btn-primary" onclick="finishSession()">Finish Workout</button>
+      <div class="btn-row mt8">
+        <button class="btn btn-ghost" onclick="setTab('home')">Save &amp; Exit</button>
+      </div>
+    </div>`;
+
+  return html;
+}
+
+// ── Exercise detail / logging view ───────────────────────────────
+function renderExerciseDetail() {
+  const ex = state.detailExercise;
+  if (!ex) return '';
+  const logs = state.setLogs[ex.id] || [];
+  const isSkipped = state.skipped.has(ex.id);
+  const inActiveSession = !!state.activeSession;
+  const isNoteOnly = ex.sets_target === 0;
+  const note = state.exerciseNotes[ex.id] || '';
+  const inSuperset = !!ex.superset_group;
+
+  const instructions = (ex.instructions || []).map(i => `<li>${i}</li>`).join('');
+
+  // Equipment chips
+  const equipChips = ex.equipment
+    ? ex.equipment.split(',').map(e => `<span class="tag">${e.trim()}</span>`).join('')
+    : '';
+
+  // Editable name for custom exercises
+  const nameEl = ex._custom
+    ? `<input class="detail-name-input" value="${ex.name}" data-ex-id="${ex.id}" placeholder="Exercise name" />`
+    : `<div class="page-title" style="font-size:18px">${ex.name}</div>`;
+
+  let mediaEl = '';
+  if (!isNoteOnly && ex.image_key) mediaEl = getExerciseMedia(ex.image_key);
+
+  let infoCard = '';
+  if (!isNoteOnly && (instructions || equipChips)) {
+    infoCard = `<div class="card">
+      ${equipChips ? `<div class="detail-section-label">Equipment</div><div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;">${equipChips}</div>` : ''}
+      ${instructions ? `<div class="detail-section-label">Instructions</div><ol class="instructions-list">${instructions}</ol>` : ''}
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;">
+        <span class="tag">${ex.sets_target} sets</span>
+        ${ex.reps_target ? `<span class="tag">${ex.reps_target} reps</span>` : ''}
+        ${ex.weight_range ? `<span class="tag tag-muted">Starting: ${startingWeight(ex.weight_range)}</span>` : ''}
+      </div>
+    </div>`;
+  }
+
+  // Notes textarea (always shown)
+  const notesCard = `<div class="card">
+    <div class="detail-section-label">Notes</div>
+    <textarea class="notes-textarea" data-ex-id="${ex.id}" placeholder="Form cues, how it felt, adjustments…" rows="3">${note}</textarea>
+  </div>`;
+
+  let setRows = '';
+  if (inActiveSession && !isSkipped && !isNoteOnly) {
+    setRows = `
+      <div class="sets-header">
+        <div>Set</div>
+        <div style="text-align:center">Weight <span style="font-size:10px;opacity:.6">(lbs)</span></div>
+        <div style="text-align:center">Reps</div>
+        <div></div>
+      </div>
+      ${logs.map((s, i) => `<div class="set-row" data-ex-id="${ex.id}" data-set-idx="${i}">${buildSetRow(ex.id, i, s)}</div>`).join('')}
+      <div class="btn-row mt8">
+        <button class="btn btn-secondary" onclick="startRestTimer(${state.restTimer.duration})">Start Rest Timer</button>
+        <button class="btn btn-danger" onclick="skipExercise('${ex.id}')">${isSkipped ? 'Unskip' : 'Skip'}</button>
+      </div>`;
+  }
+
+  return `
+    <div class="page-header">
+      <button class="back-btn" onclick="navigateTo('workout')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+      </button>
+      <div style="flex:1">
+        ${nameEl}
+        ${ex.weight_range && !isNoteOnly ? `<div class="page-subtitle">Suggested starting weight: ${startingWeight(ex.weight_range)}</div>` : ''}
+      </div>
+    </div>
+    ${mediaEl}
+    ${infoCard}
+    ${notesCard}
+    ${setRows}`;
+}
+
+function buildSetRow(exerciseId, i, s) {
+  const wVal = s.weight_lbs ?? '';
+  const rVal = s.reps ?? '';
+  const eid = exerciseId;
+  return `
+    <div class="set-num">${i + 1}</div>
+    <div class="set-input-wrap ${s.completed?'completed':''}">
+      <button class="adj-btn" data-ex-id="${eid}" data-set-idx="${i}" data-field="w" data-dir="minus">−</button>
+      <input class="set-input" type="number" inputmode="decimal" placeholder="lbs" step="any" min="0"
+        value="${wVal}" data-ex-id="${eid}" data-set-idx="${i}" data-field="w" />
+      <button class="adj-btn" data-ex-id="${eid}" data-set-idx="${i}" data-field="w" data-dir="plus">+</button>
+    </div>
+    <div class="set-input-wrap ${s.completed?'completed':''}">
+      <button class="adj-btn" data-ex-id="${eid}" data-set-idx="${i}" data-field="r" data-dir="minus">−</button>
+      <input class="set-input" type="number" inputmode="numeric" placeholder="reps"
+        value="${rVal}" data-ex-id="${eid}" data-set-idx="${i}" data-field="r" />
+      <button class="adj-btn" data-ex-id="${eid}" data-set-idx="${i}" data-field="r" data-dir="plus">+</button>
+    </div>
+    <button class="complete-btn ${s.completed?'done':''}" data-ex-id="${eid}" data-set-idx="${i}">
+      ${s.completed ?
+        '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round"><path d="M20 6L9 17l-5-5"/></svg>' :
+        '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M20 6L9 17l-5-5"/></svg>'}
+    </button>`;
+}
+
+function renderSetRow(exerciseId, i, rowEl) {
+  const s = state.setLogs[exerciseId]?.[i];
+  if (!s || !rowEl) return;
+  rowEl.innerHTML = buildSetRow(exerciseId, i, s);
+  bindSetRowEvents(rowEl, exerciseId, i);
+}
+
+// ── Summary view ─────────────────────────────────────────────────
+function renderSummary() {
+  const { completedSets, totalSets, exercises } = state.summaryData || {};
+  const prs = exercises?.flatMap(ex => (state.setLogs[ex.id] || []).filter(s => s.is_pr)).length || 0;
+  const skippedCount = state.skipped.size;
+  const pct = totalSets ? Math.round((completedSets/totalSets)*100) : 0;
+  const dayNames = { 'Day 1':'Push', 'Day 2':'Pull', 'Day 3':'Legs' };
+
+  return `
+    <div class="page-header">
+      <div class="page-title">Workout Complete 🎉</div>
+    </div>
+    <div class="summary-grid">
+      <div class="summary-stat">
+        <div class="summary-stat-value">${completedSets}</div>
+        <div class="summary-stat-label">Sets completed</div>
+      </div>
+      <div class="summary-stat">
+        <div class="summary-stat-value">${pct}%</div>
+        <div class="summary-stat-label">Completion</div>
+      </div>
+      <div class="summary-stat">
+        <div class="summary-stat-value" style="color:var(--gold)">${prs}</div>
+        <div class="summary-stat-label">Personal records</div>
+      </div>
+      <div class="summary-stat">
+        <div class="summary-stat-value" style="color:var(--text2)">${skippedCount}</div>
+        <div class="summary-stat-label">Exercises skipped</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="section-label" style="margin-top:0">Session</div>
+      <div style="font-size:16px;font-weight:700">${state.activeDay} — ${dayNames[state.activeDay]}</div>
+      <div style="font-size:13px;color:var(--text2);margin-top:4px">${fmtDate(state.activeSession?.date || today())}</div>
+    </div>
+    <div style="margin-top:20px;">
+      <button class="btn btn-primary" onclick="endAndGoHome()">Done</button>
+    </div>`;
+}
+
+// ── Progress view ─────────────────────────────────────────────────
+function renderProgress() {
+  const options = state.exercises
+    .slice()
+    .sort((a,b) => a.name.localeCompare(b.name))
+    .map(e => `<option value="${e.id}" ${e.id===state.progressExerciseId?'selected':''}>${e.name}</option>`)
+    .join('');
+
+  let historyHtml = '';
+  if (state.progressExerciseId && state.progressHistory.length > 0) {
+    const rows = state.progressHistory.map(l => `
+      <tr class="${l.is_pr?'pr':''}">
+        <td>${l.sessions?.date ? fmtDate(l.sessions.date) : '—'}</td>
+        <td>${l.weight_lbs ?? '—'}</td>
+        <td>${l.reps ?? '—'}${l.is_pr?'<span class="pr-badge">PR</span>':''}</td>
+      </tr>`).join('');
+    historyHtml = `
+      <table class="history-table">
+        <thead><tr><th>Date</th><th>Weight</th><th>Reps</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+  } else if (state.progressExerciseId) {
+    historyHtml = `<div class="empty"><div class="empty-body">No history yet for this exercise.</div></div>`;
+  }
+
+  return `
+    <div class="page-header">
+      <div class="page-title">Progress</div>
+    </div>
+    <select class="exercise-picker" id="progress-picker">
+      <option value="">Choose an exercise…</option>
+      ${options}
+    </select>
+    ${historyHtml}`;
+}
+
+// ── History view ──────────────────────────────────────────────────
+function renderHistory() {
+  if (!state.sessions.length) {
+    return `
+      <div class="page-header"><div class="page-title">History</div></div>
+      <div class="empty">
+        <div class="empty-icon">📋</div>
+        <div class="empty-title">No workouts yet</div>
+        <div class="empty-body">Complete your first workout to see it here.</div>
+      </div>`;
+  }
+
+  const cards = state.sessions.map(s => `
+    <div class="session-card">
+      <div class="session-card-header">
+        <div class="session-card-day">${s.day}</div>
+        <div class="session-card-date">${fmtDate(s.date)}</div>
+      </div>
+      <div class="session-card-stats">${daysAgo(s.date)}</div>
+    </div>`).join('');
+
+  return `
+    <div class="page-header"><div class="page-title">History</div></div>
+    ${cards}`;
+}
+
+// ── Rest timer render ─────────────────────────────────────────────
+function renderRestTimer() {
+  const el = document.getElementById('rest-timer');
+  if (!el) return;
+  if (!state.restTimer.active) { el.classList.add('hidden'); return; }
+  el.classList.remove('hidden');
+  const { remaining, duration } = state.restTimer;
+  const pct = Math.round((remaining / duration) * 100);
+  const mm = String(Math.floor(remaining / 60)).padStart(2,'0');
+  const ss = String(remaining % 60).padStart(2,'0');
+  el.innerHTML = `
+    <div>
+      <div class="timer-label">Rest timer</div>
+    </div>
+    <div class="timer-bar-wrap">
+      <div class="timer-bar" style="width:${pct}%"></div>
+    </div>
+    <div class="timer-text">${mm}:${ss}</div>
+    <button class="timer-stop" onclick="stopRestTimer()">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+    </button>`;
+}
+
+// ── Event binding ─────────────────────────────────────────────────
+function bindViewEvents() {
+  const view = document.getElementById('main-view');
+  if (!view) return;
+
+  // Day card start buttons
+  view.querySelectorAll('[data-day-start]').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      const day = btn.dataset.dayStart;
+      if (state.activeSession?.day === day) {
+        navigateTo('workout');
+      } else {
+        startSession(day);
+      }
+    });
+  });
+
+  // Exercise row click → detail (delegated)
+  const sectionSortEl = view.querySelector('#section-sortable');
+  if (sectionSortEl) {
+    sectionSortEl.addEventListener('click', e => {
+      if (e.target.closest('.drag-handle') || e.target.closest('.section-drag-handle')) return;
+      const row = e.target.closest('.exercise-row[data-ex-id]');
+      if (!row) return;
+      const exId = row.dataset.exId;
+      const ex = state.sessionExercises.find(ex => ex.id === exId)
+             || state.exercises.find(ex => ex.id === exId);
+      if (ex) navigateTo('exercise-detail', { exercise: ex });
+    });
+  }
+
+  // Set input events — fire on every keystroke so tapping Complete right after typing works
+  view.querySelectorAll('.set-input[data-ex-id]').forEach(input => {
+    const exId = input.dataset.exId;
+    const idx = parseInt(input.dataset.setIdx);
+    const field = input.dataset.field;
+    const save = () => updateSet(exId, idx, field === 'w' ? 'weight_lbs' : 'reps', input.value);
+    input.addEventListener('input', save);
+    input.addEventListener('change', save);
+  });
+
+  // +/− adj buttons
+  view.querySelectorAll('.adj-btn[data-ex-id]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const exId = btn.dataset.exId;
+      const idx = parseInt(btn.dataset.setIdx);
+      const field = btn.dataset.field;
+      const dir = btn.dataset.dir;
+      const input = view.querySelector(`.set-input[data-ex-id="${CSS.escape(exId)}"][data-set-idx="${idx}"][data-field="${field}"]`);
+      if (!input) return;
+      let val = parseFloat(input.value) || 0;
+      if (field === 'w') val = dir === 'plus' ? val + 5 : Math.max(0, val - 5);
+      else val = dir === 'plus' ? val + 1 : Math.max(0, val - 1);
+      input.value = val;
+      updateSet(exId, idx, field === 'w' ? 'weight_lbs' : 'reps', val);
+    });
+  });
+
+  // Complete set button
+  view.querySelectorAll('.complete-btn[data-ex-id]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const exId = btn.dataset.exId;
+      const idx = parseInt(btn.dataset.setIdx);
+      const esc = CSS.escape(exId);
+      const input_w = view.querySelector(`.set-input[data-ex-id="${esc}"][data-set-idx="${idx}"][data-field="w"]`);
+      const input_r = view.querySelector(`.set-input[data-ex-id="${esc}"][data-set-idx="${idx}"][data-field="r"]`);
+      if (input_w) updateSet(exId, idx, 'weight_lbs', input_w.value);
+      if (input_r) updateSet(exId, idx, 'reps', input_r.value);
+      toggleComplete(exId, idx);
+    });
+  });
+
+  // Progress picker
+  const picker = view.querySelector('#progress-picker');
+  if (picker) {
+    picker.addEventListener('change', () => loadProgress(picker.value));
+  }
+
+  // Timer options
+  view.querySelectorAll('.timer-opt').forEach(btn => {
+    btn.addEventListener('click', () => setTimerDuration(parseInt(btn.dataset.sec)));
+  });
+
+  // Notes textarea
+  view.querySelectorAll('.notes-textarea').forEach(ta => {
+    ta.addEventListener('input', () => saveExerciseNote(ta.dataset.exId, ta.value));
+  });
+
+  // Custom exercise name edit
+  view.querySelectorAll('.detail-name-input').forEach(input => {
+    input.addEventListener('change', () => {
+      const ex = state.sessionExercises.find(e => e.id === input.dataset.exId);
+      if (ex) { ex.name = input.value; state.detailExercise = ex; }
+    });
+  });
+
+  // Drag-and-drop: nested SortableJS (sections + exercises within sections)
+  if (sectionSortEl && typeof Sortable !== 'undefined') {
+    Sortable.create(sectionSortEl, {
+      handle: '.section-drag-handle',
+      animation: 150,
+      delay: 120,
+      delayOnTouchOnly: true,
+      draggable: '.section-group',
+      onEnd() { rebuildSessionExercisesFromDOM(); },
+    });
+    sectionSortEl.querySelectorAll('.exercise-sortable-inner').forEach(innerEl => {
+      Sortable.create(innerEl, {
+        handle: '.drag-handle',
+        animation: 150,
+        delay: 120,
+        delayOnTouchOnly: true,
+        onEnd() { rebuildSessionExercisesFromDOM(); },
+      });
+    });
+  }
+}
+
+function bindSetRowEvents(rowEl, exerciseId, i) {
+  const esc = CSS.escape(exerciseId);
+  rowEl.querySelectorAll('.set-input[data-ex-id]').forEach(input => {
+    const field = input.dataset.field;
+    const save = () => updateSet(exerciseId, i, field === 'w' ? 'weight_lbs' : 'reps', input.value);
+    input.addEventListener('input', save);
+    input.addEventListener('change', save);
+  });
+  rowEl.querySelectorAll('.adj-btn[data-ex-id]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const field = btn.dataset.field;
+      const dir = btn.dataset.dir;
+      const input = rowEl.querySelector(`.set-input[data-ex-id="${esc}"][data-set-idx="${i}"][data-field="${field}"]`);
+      if (!input) return;
+      let val = parseFloat(input.value) || 0;
+      if (field === 'w') val = dir === 'plus' ? val + 5 : Math.max(0, val - 5);
+      else val = dir === 'plus' ? val + 1 : Math.max(0, val - 1);
+      input.value = val;
+      updateSet(exerciseId, i, field === 'w' ? 'weight_lbs' : 'reps', val);
+    });
+  });
+  const completeBtn = rowEl.querySelector('.complete-btn[data-ex-id]');
+  if (completeBtn) {
+    completeBtn.addEventListener('click', () => {
+      const input_w = rowEl.querySelector(`.set-input[data-ex-id="${esc}"][data-set-idx="${i}"][data-field="w"]`);
+      const input_r = rowEl.querySelector(`.set-input[data-ex-id="${esc}"][data-set-idx="${i}"][data-field="r"]`);
+      if (input_w) updateSet(exerciseId, i, 'weight_lbs', input_w.value);
+      if (input_r) updateSet(exerciseId, i, 'reps', input_r.value);
+      toggleComplete(exerciseId, i);
+    });
+  }
+}
+
+// ── Init ──────────────────────────────────────────────────────────
+async function init() {
+  // Register SW
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+  }
+
+  // Request notification permission
+  if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission();
+  }
+
+  await DB.open();
+  updateSyncDot();
+
+  // Show loading
+  document.getElementById('main-view').innerHTML = `<div class="loading"><div class="spinner"></div><div>Loading…</div></div>`;
+
+  await loadExercises();
+  await loadSessions();
+
+  // Wire tab buttons
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => setTab(btn.dataset.tab));
+  });
+
+  // Online/offline handlers
+  window.addEventListener('online', () => { updateSyncDot(); syncIfOnline(); });
+  window.addEventListener('offline', () => updateSyncDot());
+
+  renderView();
+  renderRestTimer();
+}
+
+document.addEventListener('DOMContentLoaded', init);
