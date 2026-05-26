@@ -939,7 +939,7 @@ function renderHistory() {
 
   const dayNames = { 'Day 1': 'Push', 'Day 2': 'Pull', 'Day 3': 'Legs' };
   const cards = state.sessions.map(s => `
-    <div class="session-card" onclick="openSessionDetail('${s.id}')">
+    <div class="session-card" data-session-id="${s.id}">
       <div class="session-card-header">
         <div>
           <div class="session-card-day">${s.day} — ${dayNames[s.day] || ''}</div>
@@ -1060,6 +1060,11 @@ function bindViewEvents() {
   // Timer options
   view.querySelectorAll('.timer-opt').forEach(btn => {
     btn.addEventListener('click', () => setTimerDuration(parseInt(btn.dataset.sec)));
+  });
+
+  // Session card click → detail
+  view.querySelectorAll('.session-card[data-session-id]').forEach(card => {
+    card.addEventListener('click', () => openSessionDetail(card.dataset.sessionId));
   });
 
   // Notes textarea
