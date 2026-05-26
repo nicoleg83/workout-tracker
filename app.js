@@ -15,6 +15,7 @@ const state = {
   restTimer: { active: false, remaining: 0, duration: 60, exerciseName: '' },
   progressExerciseId: null,
   progressHistory: [],
+  progressError: false,
   view: 'home',
   detailExercise: null,
   historySession: null,
@@ -206,6 +207,7 @@ function initSetLogs(exercises) {
         reps: prev ? prev.reps : null,
         completed: false,
         is_pr: false,
+        _logId: null,
       });
     }
     state.setLogs[ex.id] = rows;
@@ -341,11 +343,23 @@ async function updateSet(exerciseId, setIndex, field, value) {
 async function toggleComplete(exerciseId, setIndex) {
   const set = state.setLogs[exerciseId]?.[setIndex];
   if (!set) return;
-  set.completed = !set.completed;
 
   if (set.completed) {
-    // Check for PR
-    const ex = state.exercises.find(e => e.id === exerciseId);
+    // Un-completing: remove the previously created set_log so it doesn't duplicate
+    set.completed = false;
+    set.is_pr = false;
+    if (set._logId) {
+      await DB.del('set_logs', set._logId);
+      const pending = await DB.getAll('pending_sync');
+      for (const p of pending) {
+        if (p.payload?.id === set._logId) await DB.del('pending_sync', p.id);
+      }
+      try { await Supabase.deleteRecord('set_logs', set._logId); } catch (_) {}
+      set._logId = null;
+    }
+  } else {
+    // Completing: create a fresh log entry
+    set.completed = true;
     set.is_pr = await checkPR(exerciseId, set.weight_lbs, set.reps);
 
     const log = {
@@ -361,6 +375,7 @@ async function toggleComplete(exerciseId, setIndex) {
       logged_at: new Date().toISOString(),
       synced_at: new Date().toISOString(),
     };
+    set._logId = log.id;
     await DB.put('set_logs', log);
     await DB.queueSync('set_logs', 'insert', log);
     syncIfOnline();
@@ -369,7 +384,6 @@ async function toggleComplete(exerciseId, setIndex) {
   }
 
   updateSyncDot();
-  // Re-render just the set row
   const row = document.querySelector(`.set-row[data-ex-id="${exerciseId}"][data-set-idx="${setIndex}"]`);
   if (row) renderSetRow(exerciseId, setIndex, row);
 }
@@ -442,22 +456,53 @@ function setTimerDuration(sec) {
 async function loadProgress(exerciseId) {
   state.progressExerciseId = exerciseId;
   state.progressHistory = [];
+  state.progressError = false;
   try {
     const ex = state.exercises.find(e => e.id === exerciseId);
-    // Pass all IDs sharing the same name — guards against re-seeded exercise UUIDs
     const ids = ex
       ? state.exercises.filter(e => e.name === ex.name).map(e => e.id)
       : [exerciseId];
     const raw = await Supabase.getExerciseHistory(ids);
     state.progressHistory = raw.sort((a,b) => a.logged_at.localeCompare(b.logged_at));
-  } catch (_) {}
+  } catch (_) {
+    state.progressError = true;
+  }
   renderView();
 }
 
 // ── Sync ─────────────────────────────────────────────────────────
+async function remapLocalExerciseIds() {
+  // When phone was offline, exercises got 'local-0', 'local-1' IDs instead of
+  // real Supabase UUIDs. Those set_logs can't insert (UUID column + FK constraint).
+  // Remap them to real UUIDs by matching exercise name + day before flushing.
+  const pending = await DB.getAll('pending_sync');
+  const stuck = pending.filter(
+    p => p.table === 'set_logs' &&
+    typeof p.payload?.exercise_id === 'string' &&
+    p.payload.exercise_id.startsWith('local-')
+  );
+  if (!stuck.length) return;
+  let remoteExs;
+  try { remoteExs = await Supabase.getExercises(); } catch (_) { return; }
+  for (const item of stuck) {
+    const localIdx = parseInt(item.payload.exercise_id.replace('local-', ''));
+    const localEx = EXERCISES[localIdx];
+    if (!localEx) continue;
+    const match = remoteExs.find(e => e.name === localEx.name && e.day === localEx.day);
+    if (!match) continue;
+    const fixed = { ...item, payload: { ...item.payload, exercise_id: match.id } };
+    await DB.put('pending_sync', fixed);
+    const log = await DB.get('set_logs', item.payload.id);
+    if (log) await DB.put('set_logs', { ...log, exercise_id: match.id });
+  }
+}
+
 async function syncIfOnline() {
   if (!navigator.onLine) return;
-  try { await DB.flushSync(); } catch (_) {}
+  try {
+    await remapLocalExerciseIds();
+    await DB.flushSync();
+  } catch (_) {}
   updateSyncDot();
 }
 
@@ -869,16 +914,18 @@ function renderProgress() {
     const rows = state.progressHistory.map(l => `
       <tr class="${l.is_pr?'pr':''}">
         <td>${l.logged_at ? fmtDate(l.logged_at.slice(0,10)) : '—'}</td>
-        <td>${l.weight_lbs ?? '—'}</td>
-        <td>${l.reps ?? '—'}${l.is_pr?'<span class="pr-badge">PR</span>':''}</td>
+        <td>${l.weight_lbs != null ? l.weight_lbs + ' lbs' : '—'}</td>
+        <td>${l.reps != null ? l.reps : '—'}${l.is_pr?'<span class="pr-badge">PR</span>':''}</td>
       </tr>`).join('');
     historyHtml = `
       <table class="history-table">
         <thead><tr><th>Date</th><th>Weight</th><th>Reps</th></tr></thead>
         <tbody>${rows}</tbody>
       </table>`;
+  } else if (state.progressExerciseId && state.progressError) {
+    historyHtml = `<div class="empty"><div class="empty-body">Couldn't load history — check your connection and try again.</div></div>`;
   } else if (state.progressExerciseId) {
-    historyHtml = `<div class="empty"><div class="empty-body">No history yet for this exercise.</div></div>`;
+    historyHtml = `<div class="empty"><div class="empty-body">No history yet for this exercise. Complete a set to start tracking.</div></div>`;
   }
 
   return `
@@ -1043,8 +1090,19 @@ function renderHistory() {
     </div>`).join('');
 
   return `
-    <div class="page-header"><div class="page-title">History</div></div>
+    <div class="page-header">
+      <div class="page-title">History</div>
+      <button class="btn btn-ghost" style="font-size:13px;padding:6px 10px" onclick="refreshHistory()">Sync</button>
+    </div>
     ${cards}`;
+}
+
+async function refreshHistory() {
+  toast('Syncing…');
+  await syncIfOnline();
+  await loadSessions();
+  renderView();
+  toast('History refreshed');
 }
 
 // ── Rest timer render ─────────────────────────────────────────────

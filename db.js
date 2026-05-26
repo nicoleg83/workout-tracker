@@ -104,6 +104,11 @@ const DB = (() => {
   async function flushSync() {
     const pending = await getAll('pending_sync');
     if (!pending.length) return;
+    // Sessions must be inserted before set_logs (FK dependency)
+    pending.sort((a, b) => {
+      const order = { sessions: 0, set_logs: 1 };
+      return (order[a.table] ?? 2) - (order[b.table] ?? 2) || a.created_at - b.created_at;
+    });
     for (const item of pending) {
       try {
         if (item.operation === 'insert') {
