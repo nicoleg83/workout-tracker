@@ -1,8 +1,8 @@
-const CACHE = 'workout-v38';
+const CACHE = 'workout-v39';
 const BASE = self.registration.scope;
+
+// Offline shell — only non-HTML assets (HTML is always fetched fresh)
 const SHELL = [
-  BASE,
-  BASE + 'index.html',
   BASE + 'styles.css',
   BASE + 'app.js',
   BASE + 'db.js',
@@ -11,9 +11,6 @@ const SHELL = [
   BASE + 'illustrations.js',
   BASE + 'manifest.json',
 ];
-
-// JS and CSS files that should always be fresh when online
-const ALWAYS_FRESH = ['.js', '.css'];
 
 self.addEventListener('install', e => {
   e.waitUntil(
@@ -42,11 +39,22 @@ self.addEventListener('fetch', e => {
     return;
   }
 
-  // Network-first for JS and CSS — ensures code changes are always picked up
-  const isScript = ALWAYS_FRESH.some(ext => url.pathname.endsWith(ext));
-  if (isScript) {
+  // Always network-first (bypassing HTTP cache) for the app shell files:
+  // HTML, JS, CSS, and the root URL — this ensures updates are picked up
+  // on a single reload without a double-refresh or manual cache clear.
+  const isAppShell = (
+    url.pathname.endsWith('.html') ||
+    url.pathname.endsWith('.js')  ||
+    url.pathname.endsWith('.css') ||
+    url.pathname === new URL(BASE).pathname ||
+    url.pathname === new URL(BASE).pathname.replace(/\/$/, '')
+  );
+
+  if (isAppShell) {
     e.respondWith(
-      fetch(e.request).then(res => {
+      // cache:'no-cache' bypasses the browser HTTP cache so we always hit
+      // the real server, not a stale CDN/browser-cached copy
+      fetch(e.request, { cache: 'no-cache' }).then(res => {
         if (res.ok) {
           const clone = res.clone();
           caches.open(CACHE).then(c => c.put(e.request, clone));
@@ -57,7 +65,7 @@ self.addEventListener('fetch', e => {
     return;
   }
 
-  // Cache-first for HTML and other static assets
+  // Cache-first for everything else (icons, manifest, etc.)
   e.respondWith(
     caches.match(e.request).then(cached => cached || fetch(e.request).then(res => {
       if (res.ok) {
