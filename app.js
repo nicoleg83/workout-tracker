@@ -231,6 +231,7 @@ function initSetLogs(exercises) {
 
 // ── Navigation ───────────────────────────────────────────────────
 function setTab(tab) {
+  if (tab === 'workout' && !state.activeSession) tab = 'home';
   state.tab = tab;
   state.view = tab;
   document.querySelectorAll('.tab-btn').forEach(b => {
@@ -651,7 +652,7 @@ function renderHome() {
 
 // ── Workout view ─────────────────────────────────────────────────
 function renderWorkout() {
-  if (!state.activeSession) { setTab('home'); return ''; }
+  if (!state.activeSession) { return ''; }
   const exercises = currentDayExercises();
   const prog = exerciseProgress(exercises);
   const dayNames = { 'Day 1':'Push', 'Day 2':'Pull', 'Day 3':'Legs' };
