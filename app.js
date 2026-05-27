@@ -13,9 +13,6 @@ const state = {
   skipped: new Set(),
   exerciseNotes: {},
   restTimer: { active: false, remaining: 0, duration: 60, exerciseName: '' },
-  progressExerciseId: null,
-  progressHistory: [],
-  progressError: false,
   view: 'home',
   detailExercise: null,
   historySession: null,
@@ -230,12 +227,9 @@ function setTab(tab) {
     b.classList.toggle('active', b.dataset.tab === tab);
   });
   renderView();
-  // Background-refresh data when switching to server-dependent tabs
+  // Background-refresh sessions when switching to History
   if (tab === 'history' && navigator.onLine) {
     loadSessions().then(() => { if (state.view === 'history') renderView(); });
-  }
-  if (tab === 'progress' && navigator.onLine && state.progressExerciseId) {
-    loadProgress(state.progressExerciseId);
   }
 }
 
@@ -362,7 +356,6 @@ async function toggleComplete(exerciseId, setIndex) {
   if (set.completed) {
     // Un-completing: remove the previously created set_log so it doesn't duplicate
     set.completed = false;
-    set.is_pr = false;
     if (set._logId) {
       await DB.del('set_logs', set._logId);
       const pending = await DB.getAll('pending_sync');
@@ -375,7 +368,6 @@ async function toggleComplete(exerciseId, setIndex) {
   } else {
     // Completing: create a fresh log entry
     set.completed = true;
-    set.is_pr = await checkPR(exerciseId, set.weight_lbs, set.reps);
 
     const log = {
       id: uuid(),
@@ -385,7 +377,7 @@ async function toggleComplete(exerciseId, setIndex) {
       weight_lbs: set.weight_lbs ? parseFloat(set.weight_lbs) : null,
       reps: set.reps ? parseInt(set.reps) : null,
       completed: true,
-      is_pr: set.is_pr,
+      is_pr: false,
       notes: null,
       logged_at: new Date().toISOString(),
       synced_at: new Date().toISOString(),
@@ -394,30 +386,11 @@ async function toggleComplete(exerciseId, setIndex) {
     await DB.put('set_logs', log);
     await DB.queueSync('set_logs', 'insert', log);
     syncIfOnline();
-
-    if (set.is_pr) toast('🏆 New personal record!', 'success');
   }
 
   updateSyncDot();
   const row = document.querySelector(`.set-row[data-ex-id="${exerciseId}"][data-set-idx="${setIndex}"]`);
   if (row) renderSetRow(exerciseId, setIndex, row);
-}
-
-async function checkPR(exerciseId, weightLbs, reps) {
-  if (!weightLbs || parseFloat(weightLbs) <= 0) return false;
-  try {
-    const ex = state.exercises.find(e => e.id === exerciseId);
-    const ids = ex
-      ? state.exercises.filter(e => e.name === ex.name).map(e => e.id)
-      : [exerciseId];
-    const history = await Supabase.getExerciseHistory(ids);
-    const past = history.filter(l => l.session_id !== state.activeSession?.id);
-    if (!past.length) return true; // First time doing this exercise = PR
-    const maxWeight = Math.max(0, ...past.map(l => l.weight_lbs || 0));
-    return parseFloat(weightLbs) > maxWeight;
-  } catch (_) {
-    return false;
-  }
 }
 
 function skipExercise(exerciseId) {
@@ -467,26 +440,6 @@ function setTimerDuration(sec) {
   });
 }
 
-// ── Progress ─────────────────────────────────────────────────────
-async function loadProgress(exerciseId) {
-  state.progressExerciseId = exerciseId;
-  state.progressHistory = [];
-  state.progressError = false;
-  try {
-    const ex = state.exercises.find(e => e.id === exerciseId);
-    const targetName = ex?.name;
-    const all = await Supabase.getAllUserSetLogs();
-    // Build a name map from all loaded exercises (handles re-seeded IDs across devices)
-    const nameById = new Map(state.exercises.map(e => [e.id, e.name]));
-    state.progressHistory = all
-      .filter(l => (nameById.get(l.exercise_id) || null) === targetName)
-      .sort((a, b) => a.logged_at.localeCompare(b.logged_at));
-  } catch (_) {
-    state.progressError = true;
-  }
-  renderView();
-}
-
 // ── Sync ─────────────────────────────────────────────────────────
 async function remapLocalExerciseIds() {
   // When phone was offline, exercises got 'local-0', 'local-1' IDs instead of
@@ -514,9 +467,28 @@ async function remapLocalExerciseIds() {
   }
 }
 
+async function requeueOrphanedSetLogs() {
+  // Re-queue completed set_logs that are in local IndexedDB but have no pending_sync entry.
+  // This recovers from cases where pending_sync was cleared, or entries were lost.
+  // With merge-duplicates inserts, re-queuing is safe even if the log is already in Supabase.
+  const allLogs = await DB.getAll('set_logs');
+  const completedLogs = allLogs.filter(l => l.completed);
+  if (!completedLogs.length) return;
+  const pending = await DB.getAll('pending_sync');
+  const queuedIds = new Set(
+    pending.filter(p => p.table === 'set_logs').map(p => p.payload?.id)
+  );
+  for (const log of completedLogs) {
+    if (!queuedIds.has(log.id)) {
+      await DB.queueSync('set_logs', 'insert', log);
+    }
+  }
+}
+
 async function syncIfOnline() {
   if (!navigator.onLine) return;
   try {
+    await requeueOrphanedSetLogs();
     await remapLocalExerciseIds();
     await DB.flushSync();
   } catch (_) {}
@@ -538,7 +510,7 @@ function addCustomExercise() {
   const absIdx = state.sessionExercises.findIndex(e => e.name === 'Abs');
   if (absIdx >= 0) state.sessionExercises.splice(absIdx, 0, ex);
   else state.sessionExercises.push(ex);
-  state.setLogs[ex.id] = Array.from({length: ex.sets_target}, (_, i) => ({ setNumber: i+1, weight_lbs: null, reps: null, completed: false, is_pr: false }));
+  state.setLogs[ex.id] = Array.from({length: ex.sets_target}, (_, i) => ({ setNumber: i+1, weight_lbs: null, reps: null, completed: false, _logId: null }));
   renderView();
 }
 
@@ -599,7 +571,6 @@ function renderView() {
     case 'workout':  el.innerHTML = renderWorkout(); break;
     case 'exercise-detail': el.innerHTML = renderExerciseDetail(); break;
     case 'summary':  el.innerHTML = renderSummary(); break;
-    case 'progress':        el.innerHTML = renderProgress(); break;
     case 'history':         el.innerHTML = renderHistory(); break;
     case 'session-detail':  el.innerHTML = renderSessionDetail(); break;
     default:         el.innerHTML = renderHome();
@@ -881,7 +852,7 @@ function renderSetRow(exerciseId, i, rowEl) {
 // ── Summary view ─────────────────────────────────────────────────
 function renderSummary() {
   const { completedSets, totalSets, exercises } = state.summaryData || {};
-  const prs = exercises?.flatMap(ex => (state.setLogs[ex.id] || []).filter(s => s.is_pr)).length || 0;
+  const prs = 0;
   const skippedCount = state.skipped.size;
   const pct = totalSets ? Math.round((completedSets/totalSets)*100) : 0;
   const dayNames = { 'Day 1':'Push', 'Day 2':'Pull', 'Day 3':'Legs' };
@@ -916,51 +887,6 @@ function renderSummary() {
     <div style="margin-top:20px;">
       <button class="btn btn-primary" onclick="endAndGoHome()">Done</button>
     </div>`;
-}
-
-// ── Progress view ─────────────────────────────────────────────────
-function renderProgress() {
-  // Deduplicate by name (exercises can exist twice if both devices seeded independently)
-  const seenNames = new Set();
-  const options = state.exercises
-    .slice()
-    .sort((a,b) => a.name.localeCompare(b.name))
-    .filter(e => {
-      if (seenNames.has(e.name)) return false;
-      seenNames.add(e.name);
-      return true;
-    })
-    .map(e => `<option value="${e.id}" ${e.id===state.progressExerciseId?'selected':''}>${e.name}</option>`)
-    .join('');
-
-  let historyHtml = '';
-  if (state.progressExerciseId && state.progressHistory.length > 0) {
-    const rows = state.progressHistory.map(l => `
-      <tr class="${l.is_pr?'pr':''}">
-        <td>${l.logged_at ? fmtDate(l.logged_at.slice(0,10)) : '—'}</td>
-        <td>${l.weight_lbs != null ? l.weight_lbs + ' lbs' : '—'}</td>
-        <td>${l.reps != null ? l.reps : '—'}${l.is_pr?'<span class="pr-badge">PR</span>':''}</td>
-      </tr>`).join('');
-    historyHtml = `
-      <table class="history-table">
-        <thead><tr><th>Date</th><th>Weight</th><th>Reps</th></tr></thead>
-        <tbody>${rows}</tbody>
-      </table>`;
-  } else if (state.progressExerciseId && state.progressError) {
-    historyHtml = `<div class="empty"><div class="empty-body">Couldn't load history — check your connection and try again.</div></div>`;
-  } else if (state.progressExerciseId) {
-    historyHtml = `<div class="empty"><div class="empty-body">No history yet for this exercise. Complete a set to start tracking.</div></div>`;
-  }
-
-  return `
-    <div class="page-header">
-      <div class="page-title">Progress</div>
-    </div>
-    <select class="exercise-picker" id="progress-picker">
-      <option value="">Choose an exercise…</option>
-      ${options}
-    </select>
-    ${historyHtml}`;
 }
 
 // ── Session detail ────────────────────────────────────────────────
@@ -1062,13 +988,11 @@ function renderSessionDetail() {
 
   const totalSets = completedLogs.length;
   const totalVolume = completedLogs.reduce((sum, l) => sum + (l.weight_lbs || 0) * (l.reps || 0), 0);
-  const prs = completedLogs.filter(l => l.is_pr).length;
 
   const statBar = `
     <div class="sdet-stats">
       <div class="sdet-stat"><div class="sdet-stat-val">${totalSets}</div><div class="sdet-stat-label">Sets</div></div>
       <div class="sdet-stat"><div class="sdet-stat-val">${order.length}</div><div class="sdet-stat-label">Exercises</div></div>
-      ${prs ? `<div class="sdet-stat"><div class="sdet-stat-val" style="color:var(--gold)">${prs}</div><div class="sdet-stat-label">PRs</div></div>` : ''}
       ${totalVolume ? `<div class="sdet-stat"><div class="sdet-stat-val">${(totalVolume/1000).toFixed(1)}k</div><div class="sdet-stat-label">lbs volume</div></div>` : ''}
     </div>`;
 
@@ -1076,21 +1000,19 @@ function renderSessionDetail() {
     const ex = state.exercises.find(e => e.id === exId);
     const name = ex?.name || 'Exercise';
     const sets = grouped[exId].sort((a, b) => a.set_number - b.set_number);
-    const hasPR = sets.some(s => s.is_pr);
 
     const rows = sets.map(s => `
       <div class="sdet-set-row">
         <span class="sdet-set-num">${s.set_number}</span>
         <span class="sdet-set-weight">${s.weight_lbs != null ? s.weight_lbs + ' lbs' : '—'}</span>
         <span class="sdet-set-reps">${s.reps != null ? s.reps + ' reps' : '—'}</span>
-        ${s.is_pr ? '<span class="sdet-pr">PR</span>' : ''}
       </div>`).join('');
 
     return `
       <div class="card">
-        <div class="sdet-ex-name">${name}${hasPR ? ' <span class="sdet-pr-badge">🏆 PR</span>' : ''}</div>
+        <div class="sdet-ex-name">${name}</div>
         <div class="sdet-set-header">
-          <span>Set</span><span>Weight</span><span>Reps</span><span></span>
+          <span>Set</span><span>Weight</span><span>Reps</span>
         </div>
         ${rows}
       </div>`;
@@ -1235,12 +1157,6 @@ function bindViewEvents() {
       toggleComplete(exId, idx);
     });
   });
-
-  // Progress picker
-  const picker = view.querySelector('#progress-picker');
-  if (picker) {
-    picker.addEventListener('change', () => loadProgress(picker.value));
-  }
 
   // Timer options
   view.querySelectorAll('.timer-opt').forEach(btn => {

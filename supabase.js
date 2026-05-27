@@ -15,9 +15,10 @@ const Supabase = (() => {
   }
 
   async function restReq(path, opts = {}) {
+    const { headers: extraHeaders, ...fetchOpts } = opts;
     const res = await fetch(`${BASE}/rest/v1${path}`, {
-      headers: headers(opts.headers),
-      ...opts,
+      headers: headers(extraHeaders),
+      ...fetchOpts,
     });
     if (!res.ok) {
       const e = await res.json().catch(() => ({}));
@@ -120,26 +121,7 @@ const Supabase = (() => {
     return restReq(`/set_logs?select=*&session_id=eq.${sessionId}&order=exercise_id,set_number`);
   }
 
-  async function getAllUserSetLogs(limit = 500) {
-    return restReq(
-      `/set_logs?select=weight_lbs,reps,is_pr,logged_at,session_id,exercise_id` +
-      `&completed=eq.true&order=logged_at.desc&limit=${limit}`
-    );
-  }
-
-  async function getExerciseHistory(exerciseIds) {
-    // Accept a single ID or an array (for name-based lookup across re-seeded IDs)
-    const ids = Array.isArray(exerciseIds) ? exerciseIds : [exerciseIds];
-    const filter = ids.length === 1
-      ? `exercise_id=eq.${ids[0]}`
-      : `exercise_id=in.(${ids.join(',')})`;
-    return restReq(
-      `/set_logs?select=weight_lbs,reps,is_pr,logged_at,session_id` +
-      `&${filter}&completed=eq.true&order=logged_at.desc&limit=50`
-    );
-  }
-
-  async function insert(table, payload) {
+async function insert(table, payload) {
     return restReq(`/${table}`, {
       method: 'POST',
       // merge-duplicates = upsert on conflict, making retries safe (no 409 loops)
@@ -163,7 +145,7 @@ const Supabase = (() => {
   return {
     restoreSession, signIn, signUp, signOut, getUser,
     getExercises, insertExercises,
-    getSessions, getSetLogs, getAllUserSetLogs, getExerciseHistory,
+    getSessions, getSetLogs,
     insert, update, deleteRecord,
   };
 })();
