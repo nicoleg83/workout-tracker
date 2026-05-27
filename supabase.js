@@ -121,6 +121,11 @@ const Supabase = (() => {
     return restReq(`/set_logs?select=*&session_id=eq.${sessionId}&order=exercise_id,set_number`);
   }
 
+  async function getAllSetLogs(sessionIds) {
+    if (!sessionIds.length) return [];
+    return restReq(`/set_logs?select=*&session_id=in.(${sessionIds.join(',')})&order=exercise_id,set_number`);
+  }
+
 async function insert(table, payload) {
     return restReq(`/${table}`, {
       method: 'POST',
@@ -149,7 +154,7 @@ async function insert(table, payload) {
   return {
     restoreSession, signIn, signUp, signOut, getUser,
     getExercises, insertExercises,
-    getSessions, getSetLogs, deleteSetLogsBySession,
+    getSessions, getSetLogs, getAllSetLogs, deleteSetLogsBySession,
     insert, update, deleteRecord,
   };
 })();

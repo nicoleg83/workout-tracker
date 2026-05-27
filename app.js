@@ -216,7 +216,24 @@ async function loadLastLogs(day) {
 }
 
 async function loadProgressData() {
-  const allLogs = await DB.getAll('set_logs');
+  let allLogs = await DB.getAll('set_logs');
+
+  // On a new device/browser, local IndexedDB has sessions but not their set_logs
+  // (logs were only recorded on another device). Fetch any missing ones in one batch.
+  if (navigator.onLine && state.sessions.length > 0) {
+    const localSessionIds = new Set(allLogs.map(l => l.session_id));
+    const missingIds = state.sessions.map(s => s.id).filter(id => !localSessionIds.has(id));
+    if (missingIds.length > 0) {
+      try {
+        const fetched = await Supabase.getAllSetLogs(missingIds);
+        if (fetched.length > 0) {
+          await DB.bulkPut('set_logs', fetched);
+          allLogs = allLogs.concat(fetched);
+        }
+      } catch (_) {}
+    }
+  }
+
   const completed = allLogs.filter(l => l.completed && l.weight_lbs != null);
   const sessionDateMap = {};
   for (const s of state.sessions) sessionDateMap[s.id] = s.date;
@@ -257,16 +274,13 @@ async function loadProgressData() {
   state.progressLoaded = true;
 }
 
-function checkPR(exerciseId, weight, reps, setIdx) {
+function checkPR(exerciseId, weight, reps) {
   if (!weight || !state.prCache) return;
   const w = parseFloat(weight);
   if (!w) return;
   const pr = state.prCache[exerciseId];
   if (!pr || w > pr.weight_lbs) {
     state.prCache[exerciseId] = { weight_lbs: w, reps: parseInt(reps) || 0, date: today() };
-    if (setIdx !== undefined && state.setLogs[exerciseId]?.[setIdx]) {
-      state.setLogs[exerciseId][setIdx].is_pr = true;
-    }
     const ex = state.sessionExercises.find(e => e.id === exerciseId)
             || state.exercises.find(e => e.id === exerciseId);
     const name = ex?.name || 'Exercise';
@@ -441,7 +455,6 @@ async function toggleComplete(exerciseId, setIndex) {
   if (set.completed) {
     // Un-completing: remove the previously created set_log so it doesn't duplicate
     set.completed = false;
-    set.is_pr = false;
     if (set._logId) {
       await DB.del('set_logs', set._logId);
       const pending = await DB.getAll('pending_sync');
@@ -472,7 +485,7 @@ async function toggleComplete(exerciseId, setIndex) {
     await DB.put('set_logs', log);
     await DB.queueSync('set_logs', 'insert', log);
     syncIfOnline();
-    if (log.weight_lbs) checkPR(exerciseId, log.weight_lbs, log.reps, setIndex);
+    if (log.weight_lbs) checkPR(exerciseId, log.weight_lbs, log.reps);
   }
 
   updateSyncDot();
@@ -947,9 +960,8 @@ function buildSetRow(exerciseId, i, s) {
   const wVal = s.weight_lbs ?? '';
   const rVal = s.reps ?? '';
   const eid = exerciseId;
-  const isPR = s.is_pr;
   return `
-    <div class="set-num${isPR ? ' set-num-pr' : ''}">${i + 1}${isPR ? '<span class="set-pr-tag">PR</span>' : ''}</div>
+    <div class="set-num">${i + 1}</div>
     <div class="set-input-wrap ${s.completed?'completed':''}">
       <button class="adj-btn" data-ex-id="${eid}" data-set-idx="${i}" data-field="w" data-dir="minus">−</button>
       <input class="set-input" type="number" inputmode="decimal" placeholder="lbs" step="any" min="0"
@@ -962,7 +974,7 @@ function buildSetRow(exerciseId, i, s) {
         value="${rVal}" data-ex-id="${eid}" data-set-idx="${i}" data-field="r" />
       <button class="adj-btn" data-ex-id="${eid}" data-set-idx="${i}" data-field="r" data-dir="plus">+</button>
     </div>
-    <button class="complete-btn ${s.completed ? (isPR ? 'done pr' : 'done') : ''}" data-ex-id="${eid}" data-set-idx="${i}">
+    <button class="complete-btn ${s.completed?'done':''}" data-ex-id="${eid}" data-set-idx="${i}">
       ${s.completed ?
         '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round"><path d="M20 6L9 17l-5-5"/></svg>' :
         '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M20 6L9 17l-5-5"/></svg>'}
@@ -1129,18 +1141,23 @@ function renderSessionDetail() {
     const name = ex?.name || 'Exercise';
     const sets = grouped[exId].sort((a, b) => a.set_number - b.set_number);
 
-    const rows = sets.map(s => `
-      <div class="sdet-set-row">
-        <span class="sdet-set-num">${s.set_number}</span>
-        <span class="sdet-set-weight">${s.weight_lbs != null ? s.weight_lbs + ' lbs' : '—'}</span>
-        <span class="sdet-set-reps">${s.reps != null ? s.reps + ' reps' : '—'}</span>
-      </div>`).join('');
+    const prWeight = state.prCache?.[exId]?.weight_lbs;
+    const rows = sets.map(s => {
+      const isPR = prWeight != null && s.weight_lbs != null && s.weight_lbs >= prWeight;
+      return `
+        <div class="sdet-set-row">
+          <span class="sdet-set-num">${s.set_number}</span>
+          <span class="sdet-set-weight">${s.weight_lbs != null ? s.weight_lbs + ' lbs' : '—'}</span>
+          <span class="sdet-set-reps">${s.reps != null ? s.reps + ' reps' : '—'}</span>
+          <span>${isPR ? '<span class="pr-badge">🏆 PR</span>' : ''}</span>
+        </div>`;
+    }).join('');
 
     return `
       <div class="card">
         <div class="sdet-ex-name">${name}</div>
         <div class="sdet-set-header">
-          <span>Set</span><span>Weight</span><span>Reps</span>
+          <span>Set</span><span>Weight</span><span>Reps</span><span></span>
         </div>
         ${rows}
       </div>`;
