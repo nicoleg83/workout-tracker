@@ -1566,58 +1566,70 @@ function renderSessionDetail() {
 
   let exerciseCards = '';
 
+  // Helper: render a note-only exercise card (Warmup, Abs, etc.)
+  function renderNoteCard(name, note) {
+    return `
+      <div class="card">
+        <div class="sdet-ex-name" style="color:var(--text2)">${name}</div>
+        ${note
+          ? `<div style="font-size:14px;color:var(--text);line-height:1.5">${note}</div>`
+          : `<div style="font-size:13px;color:var(--text3);font-style:italic">No notes added</div>`}
+      </div>`;
+  }
+
   if (sessionMeta) {
-    // ── New format: render full workout in session order ──────────────
-    const skippedIds = new Set(sessionMeta.skipped || []);
+    // ── New format: render full workout in saved session order ────────
     for (const exMeta of sessionMeta.exercises) {
       const { id, name, sets_target, note } = exMeta;
       const sets = (logsByEx[id] || []).sort((a, b) => a.set_number - b.set_number);
       const isNoteOnly = sets_target === 0;
-      const isSkipped = skippedIds.has(id);
 
       if (isNoteOnly) {
         // Warmup, Abs, or any note-only exercise
-        exerciseCards += `
-          <div class="card">
-            <div class="sdet-ex-name" style="color:var(--text2)">${name}</div>
-            ${note
-              ? `<div style="font-size:14px;color:var(--text);line-height:1.5">${note}</div>`
-              : `<div style="font-size:13px;color:var(--text3);font-style:italic">No notes added</div>`}
-          </div>`;
+        exerciseCards += renderNoteCard(name, note);
       } else if (sets.length) {
         // Regular exercise with logged sets
         const resolvedName = state.exercises.find(e => e.id === id)?.name || name;
         exerciseCards += renderSetCard(id, resolvedName, sets, note);
-      } else if (isSkipped) {
-        // Explicitly skipped
-        exerciseCards += `
-          <div class="card" style="opacity:0.5">
-            <div class="sdet-ex-name">${name}</div>
-            <div style="font-size:13px;color:var(--text3)">Skipped</div>
-            ${note ? `<div style="font-size:13px;color:var(--text2);font-style:italic;margin-top:6px">${note}</div>` : ''}
-          </div>`;
       } else if (note) {
-        // No sets logged but has a note (e.g. custom exercise only used for notes)
+        // No sets logged but has a note
         exerciseCards += `
           <div class="card">
             <div class="sdet-ex-name">${name}</div>
             <div style="font-size:13px;color:var(--text2);font-style:italic;line-height:1.5">${note}</div>
           </div>`;
       }
-      // Silently omit exercises with no sets, no note, and not skipped
+      // Silently omit exercises with no sets and no note
     }
   } else {
-    // ── Legacy format: just set-logs (no meta saved) ──────────────────
-    const legacyOrder = [];
-    for (const log of completedLogs) {
-      if (!legacyOrder.includes(log.exercise_id)) legacyOrder.push(log.exercise_id);
+    // ── Legacy format: reconstruct structure from master exercise list ─
+    // Notes weren't saved for old sessions, but we can at least show
+    // Warmup, the exercises in day-order, and Abs.
+    const dayExercises = state.exercises
+      .filter(e => e.day === session.day)
+      .sort((a, b) => a.sort_order - b.sort_order);
+
+    const loggedIds = new Set(Object.keys(logsByEx));
+
+    // Warmup (always present)
+    exerciseCards += renderNoteCard('Warmup', '');
+
+    // Day exercises that have set logs, in their natural sort order
+    for (const ex of dayExercises) {
+      if (!loggedIds.has(ex.id)) continue;
+      const sets = logsByEx[ex.id].sort((a, b) => a.set_number - b.set_number);
+      exerciseCards += renderSetCard(ex.id, ex.name, sets, '');
     }
-    exerciseCards = legacyOrder.map(exId => {
-      const ex = state.exercises.find(e => e.id === exId);
-      const name = ex?.name || 'Exercise';
-      const sets = logsByEx[exId].sort((a, b) => a.set_number - b.set_number);
-      return renderSetCard(exId, name, sets, '');
-    }).join('');
+
+    // Any custom / unrecognised exercises (IDs not in master list)
+    const unknownIds = [...loggedIds].filter(id => !dayExercises.find(e => e.id === id));
+    for (const id of unknownIds) {
+      const sets = logsByEx[id].sort((a, b) => a.set_number - b.set_number);
+      exerciseCards += renderSetCard(id, 'Custom Exercise', sets, '');
+    }
+
+    // Abs (always present)
+    exerciseCards += renderNoteCard('Abs', '');
   }
 
   return `${header}${statBar}${exerciseCards}`;
