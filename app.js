@@ -751,7 +751,7 @@ function renderWorkout() {
 
   let html = `
     <div class="page-header">
-      <button class="back-btn" onclick="endAndGoHome()">
+      <button class="back-btn" aria-label="Back" onclick="endAndGoHome()">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
       </button>
       <div style="flex:1">
@@ -942,7 +942,7 @@ function renderExerciseDetail() {
 
   return `
     <div class="page-header">
-      <button class="back-btn" onclick="navigateTo('workout')">
+      <button class="back-btn" aria-label="Back" onclick="navigateTo('workout')">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
       </button>
       <div style="flex:1">
@@ -1079,7 +1079,7 @@ function renderSessionDetail() {
   const dayNames = { 'Day 1': 'Push', 'Day 2': 'Pull', 'Day 3': 'Legs' };
   const header = `
     <div class="page-header">
-      <button class="back-btn" onclick="setTab('history')">
+      <button class="back-btn" aria-label="Back" onclick="setTab('history')">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
       </button>
       <div style="flex:1">
@@ -1400,7 +1400,7 @@ function renderProgressExercise() {
 
   return `
     <div class="page-header">
-      <button class="back-btn" onclick="navigateTo('progress')">
+      <button class="back-btn" aria-label="Back" onclick="navigateTo('progress')">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
       </button>
       <div class="page-title" style="font-size:18px">${ex.name}</div>
