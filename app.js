@@ -230,6 +230,10 @@ function setTab(tab) {
     b.classList.toggle('active', b.dataset.tab === tab);
   });
   renderView();
+  // Background-refresh data when switching to server-dependent tabs
+  if (tab === 'history' && navigator.onLine) {
+    loadSessions().then(() => { if (state.view === 'history') renderView(); });
+  }
 }
 
 function navigateTo(view, data = {}) {
@@ -1113,7 +1117,7 @@ function renderHistory() {
   return `
     <div class="page-header">
       <div class="page-title">History</div>
-      <button class="btn btn-ghost" style="font-size:13px;padding:6px 10px" onclick="refreshHistory()">Sync</button>
+      <button class="btn btn-ghost" style="font-size:13px;padding:6px 10px" onclick="refreshHistory()">↻ Sync</button>
     </div>
     ${cards}`;
 }
