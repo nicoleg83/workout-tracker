@@ -379,7 +379,7 @@ async function startSession(day) {
 
   state.sessionExercises = [
     makeWarmup(day, session.id),
-    ...base,
+    ...base.map(e => ({ ...e })),
     makeAbs(day, session.id),
   ];
   state.defaultExerciseIds = state.sessionExercises.map(e => e.id);
