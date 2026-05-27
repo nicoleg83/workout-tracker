@@ -397,6 +397,29 @@ async function startSession(day) {
   renderView();
 }
 
+// Snapshot the current session's exercise order, notes, and skipped state
+// into session.notes (JSON) so history can show the full picture.
+async function saveSessionMeta() {
+  if (!state.activeSession) return;
+  const meta = {
+    v: 1,
+    exercises: state.sessionExercises.map(ex => ({
+      id: ex.id,
+      name: ex.name,
+      section: ex.section || '',
+      sets_target: ex.sets_target,
+      reps_target: ex.reps_target || '',
+      note: state.exerciseNotes[ex.id] || '',
+    })),
+    skipped: Array.from(state.skipped),
+  };
+  const updated = { ...state.activeSession, notes: JSON.stringify(meta) };
+  state.activeSession = updated;
+  await DB.put('sessions', updated);
+  await DB.queueSync('sessions', 'update', updated);
+  syncIfOnline();
+}
+
 async function finishSession() {
   const exercises = currentDayExercises();
   const counted = exercises.filter(ex => !state.skipped.has(ex.id) && !isExerciseEmpty(ex.id));
@@ -405,6 +428,7 @@ async function finishSession() {
   ).length;
   const totalSets = counted.flatMap(ex => state.setLogs[ex.id] || []).length;
 
+  await saveSessionMeta();
   state.view = 'summary';
   state.summaryData = { completedSets, totalSets, exercises };
   renderView();
@@ -416,7 +440,9 @@ async function endAndGoHome() {
     const hasLogs = state.sessionExercises.some(ex =>
       (state.setLogs[ex.id] || []).some(s => s.completed)
     );
-    if (!hasLogs) {
+    if (hasLogs) {
+      await saveSessionMeta();
+    } else {
       const logs = await DB.getAll('set_logs', 'session_id', state.activeSession.id);
       for (const log of logs) await DB.del('set_logs', log.id);
       await DB.del('sessions', state.activeSession.id);
@@ -1469,13 +1495,16 @@ function renderSessionDetail() {
     return `${header}<div class="empty"><div class="empty-icon">⏳</div><div class="empty-body">Loading…</div></div>`;
   }
 
-  const rawCompleted = state.historyLogs.filter(l => l.completed);
-
-  if (!rawCompleted.length) {
-    return `${header}<div class="empty"><div class="empty-icon">📋</div><div class="empty-body">No sets were logged for this session.</div></div>`;
+  // Parse session meta (saved since the new version; older sessions won't have it)
+  let sessionMeta = null;
+  if (session.notes) {
+    try { sessionMeta = JSON.parse(session.notes); } catch (_) {}
+    // Guard: must be the structured format, not a plain-text note
+    if (!sessionMeta?.exercises) sessionMeta = null;
   }
 
-  // Deduplicate: keep latest log per (exercise_id, set_number)
+  // Deduplicate and group completed set-logs by exercise
+  const rawCompleted = state.historyLogs.filter(l => l.completed);
   const dedupSeen = new Set();
   const completedLogs = rawCompleted
     .sort((a, b) => (b.logged_at || '').localeCompare(a.logged_at || ''))
@@ -1485,74 +1514,111 @@ function renderSessionDetail() {
       dedupSeen.add(k);
       return true;
     });
-
-  // Group completed logs by exercise, preserving set order
-  const grouped = {};
-  const order = [];
+  const logsByEx = {};
   for (const log of completedLogs) {
-    if (!grouped[log.exercise_id]) {
-      grouped[log.exercise_id] = [];
-      order.push(log.exercise_id);
-    }
-    grouped[log.exercise_id].push(log);
+    if (!logsByEx[log.exercise_id]) logsByEx[log.exercise_id] = [];
+    logsByEx[log.exercise_id].push(log);
+  }
+
+  if (!completedLogs.length && !sessionMeta) {
+    return `${header}<div class="empty"><div class="empty-icon">📋</div><div class="empty-body">No sets were logged for this session.</div></div>`;
   }
 
   const totalSets = completedLogs.length;
   const totalVolume = completedLogs.reduce((sum, l) => sum + (l.weight_lbs || 0) * (l.reps || 0), 0);
+  const loggedExCount = Object.keys(logsByEx).length;
 
   const statBar = `
     <div class="sdet-stats">
       <div class="sdet-stat"><div class="sdet-stat-val">${totalSets}</div><div class="sdet-stat-label">Sets</div></div>
-      <div class="sdet-stat"><div class="sdet-stat-val">${order.length}</div><div class="sdet-stat-label">Exercises</div></div>
+      <div class="sdet-stat"><div class="sdet-stat-val">${loggedExCount}</div><div class="sdet-stat-label">Exercises</div></div>
       ${totalVolume ? `<div class="sdet-stat"><div class="sdet-stat-val">${(totalVolume/1000).toFixed(1)}k</div><div class="sdet-stat-label">lbs volume</div></div>` : ''}
     </div>`;
 
-  const exerciseCards = order.map(exId => {
-    const ex = state.exercises.find(e => e.id === exId);
-    const name = ex?.name || 'Exercise';
-    const sets = grouped[exId].sort((a, b) => a.set_number - b.set_number);
-
-    // PR badge: badge exactly one set per exercise — the best-performing set
-    // (highest weight, then highest reps as tiebreaker) — and only in the
-    // session whose date matches the current all-time PR date.
+  // Helper: render a set-log card for one exercise
+  function renderSetCard(exId, name, sets, exNote) {
     const prData = state.prCache?.[exId];
     const isThePRSession = !!(prData?.date && session.date === prData.date);
-
-    // Find the index of the single best set in this session
     let prSetIdx = -1;
     if (isThePRSession && prData?.weight_lbs != null) {
       let bestW = -1, bestR = -1;
       sets.forEach((s, idx) => {
-        const w = s.weight_lbs ?? 0;
-        const r = s.reps ?? 0;
-        if (w > bestW || (w === bestW && r > bestR)) {
-          bestW = w; bestR = r; prSetIdx = idx;
-        }
+        const w = s.weight_lbs ?? 0; const r = s.reps ?? 0;
+        if (w > bestW || (w === bestW && r > bestR)) { bestW = w; bestR = r; prSetIdx = idx; }
       });
-      // Only mark if the best set actually matches the all-time PR weight
       if ((sets[prSetIdx]?.weight_lbs ?? 0) !== prData.weight_lbs) prSetIdx = -1;
     }
-
-    const rows = sets.map((s, idx) => {
-      const isPR = idx === prSetIdx;
-      return `
-        <div class="sdet-set-row">
-          <span class="sdet-set-num">${s.set_number}</span>
-          <span class="sdet-set-weight">${s.weight_lbs != null ? s.weight_lbs + ' lbs' : '—'}</span>
-          <span class="sdet-set-reps">${s.reps != null ? s.reps + ' reps' : '—'}</span>
-          <span>${isPR ? '<span class="pr-badge">🏆 PR</span>' : ''}</span>
-        </div>`;
-    }).join('');
-
+    const rows = sets.map((s, idx) => `
+      <div class="sdet-set-row">
+        <span class="sdet-set-num">${s.set_number}</span>
+        <span class="sdet-set-weight">${s.weight_lbs != null ? s.weight_lbs + ' lbs' : '—'}</span>
+        <span class="sdet-set-reps">${s.reps != null ? s.reps + ' reps' : '—'}</span>
+        <span>${idx === prSetIdx ? '<span class="pr-badge">🏆 PR</span>' : ''}</span>
+      </div>`).join('');
     return `
       <div class="card">
         <div class="sdet-ex-name">${name}</div>
-        <div class="sdet-set-header">
-          <span>Set</span><span>Weight</span><span>Reps</span><span></span>
-        </div>
+        ${exNote ? `<div style="font-size:13px;color:var(--text2);font-style:italic;margin-bottom:10px;line-height:1.5">${exNote}</div>` : ''}
+        <div class="sdet-set-header"><span>Set</span><span>Weight</span><span>Reps</span><span></span></div>
         ${rows}
       </div>`;
-  }).join('');
+  }
+
+  let exerciseCards = '';
+
+  if (sessionMeta) {
+    // ── New format: render full workout in session order ──────────────
+    const skippedIds = new Set(sessionMeta.skipped || []);
+    for (const exMeta of sessionMeta.exercises) {
+      const { id, name, sets_target, note } = exMeta;
+      const sets = (logsByEx[id] || []).sort((a, b) => a.set_number - b.set_number);
+      const isNoteOnly = sets_target === 0;
+      const isSkipped = skippedIds.has(id);
+
+      if (isNoteOnly) {
+        // Warmup, Abs, or any note-only exercise
+        exerciseCards += `
+          <div class="card">
+            <div class="sdet-ex-name" style="color:var(--text2)">${name}</div>
+            ${note
+              ? `<div style="font-size:14px;color:var(--text);line-height:1.5">${note}</div>`
+              : `<div style="font-size:13px;color:var(--text3);font-style:italic">No notes added</div>`}
+          </div>`;
+      } else if (sets.length) {
+        // Regular exercise with logged sets
+        const resolvedName = state.exercises.find(e => e.id === id)?.name || name;
+        exerciseCards += renderSetCard(id, resolvedName, sets, note);
+      } else if (isSkipped) {
+        // Explicitly skipped
+        exerciseCards += `
+          <div class="card" style="opacity:0.5">
+            <div class="sdet-ex-name">${name}</div>
+            <div style="font-size:13px;color:var(--text3)">Skipped</div>
+            ${note ? `<div style="font-size:13px;color:var(--text2);font-style:italic;margin-top:6px">${note}</div>` : ''}
+          </div>`;
+      } else if (note) {
+        // No sets logged but has a note (e.g. custom exercise only used for notes)
+        exerciseCards += `
+          <div class="card">
+            <div class="sdet-ex-name">${name}</div>
+            <div style="font-size:13px;color:var(--text2);font-style:italic;line-height:1.5">${note}</div>
+          </div>`;
+      }
+      // Silently omit exercises with no sets, no note, and not skipped
+    }
+  } else {
+    // ── Legacy format: just set-logs (no meta saved) ──────────────────
+    const legacyOrder = [];
+    for (const log of completedLogs) {
+      if (!legacyOrder.includes(log.exercise_id)) legacyOrder.push(log.exercise_id);
+    }
+    exerciseCards = legacyOrder.map(exId => {
+      const ex = state.exercises.find(e => e.id === exId);
+      const name = ex?.name || 'Exercise';
+      const sets = logsByEx[exId].sort((a, b) => a.set_number - b.set_number);
+      return renderSetCard(exId, name, sets, '');
+    }).join('');
+  }
 
   return `${header}${statBar}${exerciseCards}`;
 }
