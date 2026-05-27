@@ -61,6 +61,10 @@ function startingWeight(range) {
   const low = parts[0].trim();
   return /^\d+(\.\d+)?$/.test(low) ? `${low} lbs` : low;
 }
+function isTimeBased(exId) {
+  const ex = state.sessionExercises.find(e => e.id === exId) || state.exercises.find(e => e.id === exId);
+  return ex ? /^\d+s$/.test(ex.reps_target || '') : false;
+}
 function buildSectionGroups(exercises) {
   const groups = [];
   const idx = {};
@@ -1143,11 +1147,12 @@ function renderExerciseDetail() {
 
   let setRows = '';
   if (inActiveSession && !isSkipped && !isNoteOnly) {
+    const repsCol = isTimeBased(ex.id) ? 'Secs' : 'Reps';
     setRows = `
       <div class="sets-header">
         <div>Set</div>
         <div style="text-align:center">Weight <span style="font-size:10px;opacity:.6">(lbs)</span></div>
-        <div style="text-align:center">Reps</div>
+        <div style="text-align:center">${repsCol}</div>
         <div></div>
       </div>
       ${logs.map((s, i) => `<div class="set-row" data-ex-id="${ex.id}" data-set-idx="${i}">${buildSetRow(ex.id, i, s)}</div>`).join('')}
@@ -1177,19 +1182,22 @@ function buildSetRow(exerciseId, i, s) {
   const wVal = s.weight_lbs ?? '';
   const rVal = s.reps ?? '';
   const eid = exerciseId;
+  const timeBased = isTimeBased(exerciseId);
+  const rPlaceholder = timeBased ? 'secs' : 'reps';
+  const rStep = timeBased ? 5 : 1;
   return `
     <div class="set-num">${i + 1}</div>
     <div class="set-input-wrap ${s.completed?'completed':''}">
-      <button class="adj-btn" data-ex-id="${eid}" data-set-idx="${i}" data-field="w" data-dir="minus">−</button>
+      <button class="adj-btn" data-ex-id="${eid}" data-set-idx="${i}" data-field="w" data-dir="minus" data-step="5">−</button>
       <input class="set-input" type="number" inputmode="decimal" placeholder="lbs" step="any" min="0"
         value="${wVal}" data-ex-id="${eid}" data-set-idx="${i}" data-field="w" />
-      <button class="adj-btn" data-ex-id="${eid}" data-set-idx="${i}" data-field="w" data-dir="plus">+</button>
+      <button class="adj-btn" data-ex-id="${eid}" data-set-idx="${i}" data-field="w" data-dir="plus" data-step="5">+</button>
     </div>
     <div class="set-input-wrap ${s.completed?'completed':''}">
-      <button class="adj-btn" data-ex-id="${eid}" data-set-idx="${i}" data-field="r" data-dir="minus">−</button>
-      <input class="set-input" type="number" inputmode="numeric" placeholder="reps"
+      <button class="adj-btn" data-ex-id="${eid}" data-set-idx="${i}" data-field="r" data-dir="minus" data-step="${rStep}">−</button>
+      <input class="set-input" type="number" inputmode="numeric" placeholder="${rPlaceholder}"
         value="${rVal}" data-ex-id="${eid}" data-set-idx="${i}" data-field="r" />
-      <button class="adj-btn" data-ex-id="${eid}" data-set-idx="${i}" data-field="r" data-dir="plus">+</button>
+      <button class="adj-btn" data-ex-id="${eid}" data-set-idx="${i}" data-field="r" data-dir="plus" data-step="${rStep}">+</button>
     </div>
     <button class="complete-btn ${s.completed?'done':''}" data-ex-id="${eid}" data-set-idx="${i}">
       ${s.completed ?
@@ -1236,11 +1244,12 @@ function renderSupersetDetail() {
         : '';
     }
 
+    const repsCol = isTimeBased(ex.id) ? 'Secs' : 'Reps';
     const setTable = !isSkipped ? `
       <div class="sets-header">
         <div>Set</div>
         <div style="text-align:center">Weight <span style="font-size:10px;opacity:.6">(lbs)</span></div>
-        <div style="text-align:center">Reps</div>
+        <div style="text-align:center">${repsCol}</div>
         <div></div>
       </div>
       ${logs.map((s, i) => `<div class="set-row" data-ex-id="${ex.id}" data-set-idx="${i}">${buildSetRow(ex.id, i, s)}</div>`).join('')}` : `
@@ -1815,11 +1824,11 @@ function bindViewEvents() {
       const idx = parseInt(btn.dataset.setIdx);
       const field = btn.dataset.field;
       const dir = btn.dataset.dir;
+      const step = parseInt(btn.dataset.step) || (field === 'w' ? 5 : 1);
       const input = view.querySelector(`.set-input[data-ex-id="${CSS.escape(exId)}"][data-set-idx="${idx}"][data-field="${field}"]`);
       if (!input) return;
       let val = parseFloat(input.value) || 0;
-      if (field === 'w') val = dir === 'plus' ? val + 5 : Math.max(0, val - 5);
-      else val = dir === 'plus' ? val + 1 : Math.max(0, val - 1);
+      val = dir === 'plus' ? val + step : Math.max(0, val - step);
       input.value = val;
       updateSet(exId, idx, field === 'w' ? 'weight_lbs' : 'reps', val);
     });
@@ -1956,11 +1965,11 @@ function bindSetRowEvents(rowEl, exerciseId, i) {
     btn.addEventListener('click', () => {
       const field = btn.dataset.field;
       const dir = btn.dataset.dir;
+      const step = parseInt(btn.dataset.step) || (field === 'w' ? 5 : 1);
       const input = rowEl.querySelector(`.set-input[data-ex-id="${esc}"][data-set-idx="${i}"][data-field="${field}"]`);
       if (!input) return;
       let val = parseFloat(input.value) || 0;
-      if (field === 'w') val = dir === 'plus' ? val + 5 : Math.max(0, val - 5);
-      else val = dir === 'plus' ? val + 1 : Math.max(0, val - 1);
+      val = dir === 'plus' ? val + step : Math.max(0, val - step);
       input.value = val;
       updateSet(exerciseId, i, field === 'w' ? 'weight_lbs' : 'reps', val);
     });
