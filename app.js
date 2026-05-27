@@ -268,8 +268,12 @@ async function loadProgressData() {
   for (const [exId, sessMap] of Object.entries(byEx)) {
     const history = Object.entries(sessMap)
       .map(([sid, { date, sets }]) => {
-        const best = sets.reduce((b, s) =>
-          (!b || s.weight_lbs > b.weight_lbs) ? s : b, null);
+        const best = sets.reduce((b, s) => {
+          if (!b) return s;
+          if (s.weight_lbs > b.weight_lbs) return s;
+          if (s.weight_lbs === b.weight_lbs && (s.reps || 0) > (b.reps || 0)) return s;
+          return b;
+        }, null);
         return { sessionId: sid, date, sets: sets.sort((a, b) => a.set_number - b.set_number), bestSet: best };
       })
       .sort((a, b) => b.date.localeCompare(a.date));
@@ -1508,19 +1512,29 @@ function renderSessionDetail() {
     const name = ex?.name || 'Exercise';
     const sets = grouped[exId].sort((a, b) => a.set_number - b.set_number);
 
-    // PR badge: show once per exercise — only on the best set, and only in the session
-    // where the all-time PR was actually achieved (matched by date).
+    // PR badge: badge exactly one set per exercise — the best-performing set
+    // (highest weight, then highest reps as tiebreaker) — and only in the
+    // session whose date matches the current all-time PR date.
     const prData = state.prCache?.[exId];
-    const isThePRSession = prData?.date && session.date === prData.date;
-    const sessionMaxWeight = isThePRSession
-      ? Math.max(...sets.map(s => s.weight_lbs || 0))
-      : 0;
-    let prMarked = false;
-    const rows = sets.map(s => {
-      const isPR = isThePRSession && !prMarked
-        && prData.weight_lbs != null && s.weight_lbs === prData.weight_lbs
-        && s.weight_lbs === sessionMaxWeight;
-      if (isPR) prMarked = true;
+    const isThePRSession = !!(prData?.date && session.date === prData.date);
+
+    // Find the index of the single best set in this session
+    let prSetIdx = -1;
+    if (isThePRSession && prData?.weight_lbs != null) {
+      let bestW = -1, bestR = -1;
+      sets.forEach((s, idx) => {
+        const w = s.weight_lbs ?? 0;
+        const r = s.reps ?? 0;
+        if (w > bestW || (w === bestW && r > bestR)) {
+          bestW = w; bestR = r; prSetIdx = idx;
+        }
+      });
+      // Only mark if the best set actually matches the all-time PR weight
+      if ((sets[prSetIdx]?.weight_lbs ?? 0) !== prData.weight_lbs) prSetIdx = -1;
+    }
+
+    const rows = sets.map((s, idx) => {
+      const isPR = idx === prSetIdx;
       return `
         <div class="sdet-set-row">
           <span class="sdet-set-num">${s.set_number}</span>
