@@ -87,10 +87,17 @@ function resetExerciseOrder() {
   const ids = state.defaultExerciseIds;
   if (!ids.length) return;
   const byId = new Map(state.sessionExercises.map(e => [e.id, e]));
-  const reordered = ids.map(id => byId.get(id)).filter(Boolean);
-  const defaultSet = new Set(ids);
-  const extras = state.sessionExercises.filter(e => !defaultSet.has(e.id));
-  state.sessionExercises = [...reordered, ...extras];
+  const originalMap = new Map(state.exercises.map(e => [e.id, e]));
+  state.sessionExercises = ids.map(id => {
+    const ex = byId.get(id);
+    if (!ex) return null;
+    const orig = originalMap.get(id);
+    if (orig) {
+      ex.superset_group = orig.superset_group ?? null;
+      ex.section = orig.section;
+    }
+    return ex;
+  }).filter(Boolean);
   renderView();
 }
 
