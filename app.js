@@ -1567,13 +1567,17 @@ function renderSessionDetail() {
   let exerciseCards = '';
 
   // Helper: render a note-only exercise card (Warmup, Abs, etc.)
-  function renderNoteCard(name, note) {
+  // showPlaceholder=true (new sessions): show "No notes added" hint when empty
+  // showPlaceholder=false (legacy): notes were never captured, show nothing
+  function renderNoteCard(name, note, showPlaceholder = true) {
     return `
       <div class="card">
         <div class="sdet-ex-name" style="color:var(--text2)">${name}</div>
         ${note
           ? `<div style="font-size:14px;color:var(--text);line-height:1.5">${note}</div>`
-          : `<div style="font-size:13px;color:var(--text3);font-style:italic">No notes added</div>`}
+          : showPlaceholder
+            ? `<div style="font-size:13px;color:var(--text3);font-style:italic">No notes added</div>`
+            : ''}
       </div>`;
   }
 
@@ -1611,8 +1615,8 @@ function renderSessionDetail() {
 
     const loggedIds = new Set(Object.keys(logsByEx));
 
-    // Warmup (always present)
-    exerciseCards += renderNoteCard('Warmup', '');
+    // Warmup (always present — notes not available for legacy sessions)
+    exerciseCards += renderNoteCard('Warmup', '', false);
 
     // Day exercises that have set logs, in their natural sort order
     for (const ex of dayExercises) {
@@ -1628,8 +1632,8 @@ function renderSessionDetail() {
       exerciseCards += renderSetCard(id, 'Custom Exercise', sets, '');
     }
 
-    // Abs (always present)
-    exerciseCards += renderNoteCard('Abs', '');
+    // Abs (always present — notes not available for legacy sessions)
+    exerciseCards += renderNoteCard('Abs', '', false);
   }
 
   return `${header}${statBar}${exerciseCards}`;
