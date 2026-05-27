@@ -37,7 +37,7 @@ body {
 .view {
   flex: 1;
   overflow-y: auto;
-  padding: 16px 16px calc(var(--tab-h) + var(--safe-bottom) + 16px);
+  padding: calc(env(safe-area-inset-top, 0px) + 16px) 16px calc(var(--tab-h) + var(--safe-bottom) + 16px);
   -webkit-overflow-scrolling: touch;
 }
 
@@ -616,7 +616,7 @@ body {
 /* ── Toast ── */
 #toast {
   position: fixed;
-  top: 16px;
+  top: calc(env(safe-area-inset-top, 0px) + 16px);
   left: 50%;
   transform: translateX(-50%) translateY(-80px);
   background: var(--bg2);
@@ -640,7 +640,7 @@ body {
   border-radius: 50%;
   background: var(--green);
   position: fixed;
-  top: 14px; right: 16px;
+  top: calc(env(safe-area-inset-top, 0px) + 14px); right: 16px;
   z-index: 150;
 }
 #sync-dot.pending { background: var(--gold); animation: pulse 1s ease-in-out infinite; }
@@ -1159,3 +1159,15 @@ body {
   -webkit-tap-highlight-color: transparent;
 }
 .group-picker-cancel:active { background: var(--bg3); }
+
+/* ── Section rename button ── */
+.section-name-label { flex: 1; min-width: 0; }
+.section-rename-btn {
+  background: none; border: none; color: var(--text3);
+  padding: 4px; cursor: pointer; border-radius: 4px;
+  display: inline-flex; align-items: center;
+  -webkit-tap-highlight-color: transparent;
+  flex-shrink: 0; margin-left: 2px;
+  transition: color 0.15s;
+}
+.section-rename-btn:active { color: var(--pink); }

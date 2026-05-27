@@ -714,6 +714,38 @@ function renameSuperset(supersetId, newName) {
   renderView();
 }
 
+function startRenameSection(sectionName) {
+  const view = document.getElementById('main-view');
+  if (!view) return;
+  const sectionGroup = view.querySelector(`.section-group[data-section="${CSS.escape(sectionName)}"]`);
+  if (!sectionGroup) return;
+  const nameLabel = sectionGroup.querySelector('.section-name-label');
+  if (!nameLabel) return;
+  const currentName = nameLabel.textContent.trim();
+  const renameBtn = sectionGroup.querySelector('.section-rename-btn');
+  const wrap = document.createElement('div');
+  wrap.className = 'ss-rename-wrap';
+  wrap.innerHTML = `<input class="ss-rename-input" value="${currentName}" /><button class="ss-rename-confirm">✓</button>`;
+  if (renameBtn) renameBtn.style.display = 'none';
+  nameLabel.replaceWith(wrap);
+  const input = wrap.querySelector('.ss-rename-input');
+  input.focus();
+  input.select();
+  let saved = false;
+  const save = () => {
+    if (saved) return;
+    saved = true;
+    const newName = input.value.trim() || currentName;
+    state.sessionExercises.forEach(ex => {
+      if (ex.section === sectionName) ex.section = newName;
+    });
+    renderView();
+  };
+  input.addEventListener('blur', () => setTimeout(save, 120));
+  wrap.querySelector('.ss-rename-confirm').addEventListener('click', save);
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') save(); });
+}
+
 function ungroupSuperset(supersetId) {
   document.querySelectorAll('.ss-dropdown').forEach(el => el.remove());
   state.sessionExercises.forEach(ex => {
@@ -953,6 +985,7 @@ function renderWorkout() {
             </div>
             <div style="display:flex;align-items:center;gap:6px">
               <span class="superset-card-progress">${totalDone}/${totalSets} sets</span>
+              <span style="color:var(--text3);font-size:16px;line-height:1">›</span>
               <button class="ss-menu-btn" data-ss-menu="${supersetId}">⋮</button>
             </div>
           </div>
@@ -988,7 +1021,8 @@ function renderWorkout() {
       html += `<div class="section-group" data-section="${section}">
         <div class="section-label section-draggable">
           <span class="section-drag-handle">⠿</span>
-          ${displaySection}
+          <span class="section-name-label">${displaySection}</span>
+          ${state.activeSession ? `<button class="section-rename-btn" data-rename-section="${section}" aria-label="Rename section"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>` : ''}
         </div>
         <div class="exercise-sortable-inner">`;
 
@@ -1162,6 +1196,13 @@ function renderExerciseDetail() {
       </div>`;
   }
 
+  const supersetLabel = inSuperset
+    ? (state.sessionExercises.find(e => e.superset_group === ex.superset_group)?.section || 'Superset')
+    : null;
+  const supersetBreadcrumb = inSuperset && supersetLabel
+    ? `<div style="font-size:11px;color:var(--pink);margin-top:2px;cursor:pointer;-webkit-tap-highlight-color:transparent" onclick="navigateTo('superset-detail',{supersetId:'${ex.superset_group}'})">↑ ${supersetLabel}</div>`
+    : '';
+
   return `
     <div class="page-header">
       <button class="back-btn" aria-label="Back" onclick="navigateTo('workout')">
@@ -1169,6 +1210,7 @@ function renderExerciseDetail() {
       </button>
       <div style="flex:1">
         ${nameEl}
+        ${supersetBreadcrumb}
       </div>
     </div>
     ${mediaEl}
@@ -1230,18 +1272,40 @@ function renderSupersetDetail() {
       ? `<img class="ss-ex-thumb-img" src="icons/exercises/${ex.image_key}.jpg" alt="" loading="lazy" />`
       : (ILLUSTRATIONS[ex.image_key] || ILLUSTRATIONS['_placeholder']).replace(/viewBox="[^"]*"/, 'viewBox="0 0 120 160"');
 
-    // Compact last-session hint
-    const lastSets = (state.lastLogs[ex.id] || []).filter(s => s.completed);
-    let lastHint = '';
-    if (lastSets.length > 0) {
-      const w = lastSets.find(s => s.weight_lbs)?.weight_lbs;
-      const r = lastSets.find(s => s.reps)?.reps;
-      const parts = [];
-      if (w) parts.push(`${w} lbs`);
-      if (r) parts.push(`${r} reps`);
-      lastHint = parts.length
-        ? `<div class="ss-ex-last">Last: ${parts.join(' × ')}</div>`
-        : '';
+    // Full last-session card (mirrors exercise-detail)
+    let lastSessionCard = '';
+    if (state.activeSession) {
+      const prevSets = (state.lastLogs[ex.id] || []).filter(s => s.completed).sort((a, b) => a.set_number - b.set_number);
+      if (prevSets.length > 0) {
+        const prData = state.prCache?.[ex.id];
+        const lastDate = state.lastCache?.[ex.id]?.date;
+        const setRows = prevSets.map(s =>
+          `<div class="last-set-row">
+            <div class="last-set-num">Set ${s.set_number}</div>
+            <div class="last-set-val">${s.weight_lbs != null ? s.weight_lbs + ' lbs' : '—'} &nbsp;×&nbsp; ${s.reps != null ? s.reps + ' reps' : '—'}</div>
+          </div>`
+        ).join('');
+        const prRow = prData ? `
+          <div class="last-pr-row">
+            <div class="last-pr-left">
+              <span class="last-pr-label">🏆 PR</span>
+              <div>
+                <div class="last-pr-val">${prData.weight_lbs} lbs × ${prData.reps}</div>
+                <div class="last-pr-sub">${fmtDate(prData.date)}</div>
+              </div>
+            </div>
+            <button class="last-see-history" data-prog-ex="${ex.id}">See history ›</button>
+          </div>` : '';
+        lastSessionCard = `
+          <div class="last-session-card" style="margin:0 0 12px">
+            <div class="last-session-header">
+              <div class="last-session-title">Last session</div>
+              ${lastDate ? `<div class="last-session-date">${fmtDate(lastDate)}</div>` : ''}
+            </div>
+            <div class="last-session-sets">${setRows}</div>
+            ${prRow}
+          </div>`;
+      }
     }
 
     const repsCol = isTimeBased(ex.id) ? 'Secs' : 'Reps';
@@ -1266,10 +1330,10 @@ function renderSupersetDetail() {
           <div class="ss-ex-info">
             <div class="ss-ex-name">${ex.name}</div>
             <div class="ss-ex-meta">${ex.sets_target}×${ex.reps_target}${ex.weight_range ? ' · ~' + startingWeight(ex.weight_range) : ''}</div>
-            ${lastHint}
           </div>
           ${skipBtn}
         </div>
+        ${lastSessionCard}
         <div class="ss-ex-sets">
           ${setTable}
         </div>
@@ -1444,9 +1508,19 @@ function renderSessionDetail() {
     const name = ex?.name || 'Exercise';
     const sets = grouped[exId].sort((a, b) => a.set_number - b.set_number);
 
-    const prWeight = state.prCache?.[exId]?.weight_lbs;
+    // PR badge: show once per exercise — only on the best set, and only in the session
+    // where the all-time PR was actually achieved (matched by date).
+    const prData = state.prCache?.[exId];
+    const isThePRSession = prData?.date && session.date === prData.date;
+    const sessionMaxWeight = isThePRSession
+      ? Math.max(...sets.map(s => s.weight_lbs || 0))
+      : 0;
+    let prMarked = false;
     const rows = sets.map(s => {
-      const isPR = prWeight != null && s.weight_lbs != null && s.weight_lbs >= prWeight;
+      const isPR = isThePRSession && !prMarked
+        && prData.weight_lbs != null && s.weight_lbs === prData.weight_lbs
+        && s.weight_lbs === sessionMaxWeight;
+      if (isPR) prMarked = true;
       return `
         <div class="sdet-set-row">
           <span class="sdet-set-num">${s.set_number}</span>
@@ -1793,17 +1867,22 @@ function bindViewEvents() {
     sectionSortEl.addEventListener('click', e => {
       if (e.target.closest('.drag-handle') || e.target.closest('.section-drag-handle')) return;
       if (e.target.closest('.ex-group-btn') || e.target.closest('.ss-menu-btn')) return;
+      if (e.target.closest('.section-rename-btn')) return;
+      // Superset card header → combined superset view
+      const ssHeader = e.target.closest('.superset-card-header');
+      if (ssHeader) {
+        const card = ssHeader.closest('.superset-card[data-superset-id]');
+        if (card) navigateTo('superset-detail', { supersetId: card.dataset.supersetId });
+        return;
+      }
+      // Any exercise row (superset or standalone) → individual exercise detail
       const row = e.target.closest('.exercise-row[data-ex-id]');
       if (!row) return;
       const exId = row.dataset.exId;
       const ex = state.sessionExercises.find(ex => ex.id === exId)
              || state.exercises.find(ex => ex.id === exId);
       if (!ex) return;
-      if (ex.superset_group) {
-        navigateTo('superset-detail', { supersetId: ex.superset_group });
-      } else {
-        navigateTo('exercise-detail', { exercise: ex });
-      }
+      navigateTo('exercise-detail', { exercise: ex });
     });
   }
 
@@ -1915,6 +1994,14 @@ function bindViewEvents() {
     btn.addEventListener('click', e => {
       e.stopPropagation();
       showGroupPicker(btn.dataset.groupEx);
+    });
+  });
+
+  // Section rename pencil button
+  view.querySelectorAll('.section-rename-btn[data-rename-section]').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      startRenameSection(btn.dataset.renameSection);
     });
   });
 
