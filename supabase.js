@@ -120,6 +120,13 @@ const Supabase = (() => {
     return restReq(`/set_logs?select=*&session_id=eq.${sessionId}&order=exercise_id,set_number`);
   }
 
+  async function getAllUserSetLogs(limit = 500) {
+    return restReq(
+      `/set_logs?select=weight_lbs,reps,is_pr,logged_at,session_id,exercise_id` +
+      `&completed=eq.true&order=logged_at.desc&limit=${limit}`
+    );
+  }
+
   async function getExerciseHistory(exerciseIds) {
     // Accept a single ID or an array (for name-based lookup across re-seeded IDs)
     const ids = Array.isArray(exerciseIds) ? exerciseIds : [exerciseIds];
@@ -155,7 +162,7 @@ const Supabase = (() => {
   return {
     restoreSession, signIn, signUp, signOut, getUser,
     getExercises, insertExercises,
-    getSessions, getSetLogs, getExerciseHistory,
+    getSessions, getSetLogs, getAllUserSetLogs, getExerciseHistory,
     insert, update, deleteRecord,
   };
 })();

@@ -459,11 +459,13 @@ async function loadProgress(exerciseId) {
   state.progressError = false;
   try {
     const ex = state.exercises.find(e => e.id === exerciseId);
-    const ids = ex
-      ? state.exercises.filter(e => e.name === ex.name).map(e => e.id)
-      : [exerciseId];
-    const raw = await Supabase.getExerciseHistory(ids);
-    state.progressHistory = raw.sort((a,b) => a.logged_at.localeCompare(b.logged_at));
+    const targetName = ex?.name;
+    const all = await Supabase.getAllUserSetLogs();
+    // Build a name map from all loaded exercises (handles re-seeded IDs across devices)
+    const nameById = new Map(state.exercises.map(e => [e.id, e.name]));
+    state.progressHistory = all
+      .filter(l => (nameById.get(l.exercise_id) || null) === targetName)
+      .sort((a, b) => a.logged_at.localeCompare(b.logged_at));
   } catch (_) {
     state.progressError = true;
   }
@@ -1008,11 +1010,22 @@ function renderSessionDetail() {
     return `${header}<div class="empty"><div class="empty-icon">⏳</div><div class="empty-body">Loading…</div></div>`;
   }
 
-  const completedLogs = state.historyLogs.filter(l => l.completed);
+  const rawCompleted = state.historyLogs.filter(l => l.completed);
 
-  if (!completedLogs.length) {
+  if (!rawCompleted.length) {
     return `${header}<div class="empty"><div class="empty-icon">📋</div><div class="empty-body">No sets were logged for this session.</div></div>`;
   }
+
+  // Deduplicate: keep latest log per (exercise_id, set_number)
+  const dedupSeen = new Set();
+  const completedLogs = rawCompleted
+    .sort((a, b) => (b.logged_at || '').localeCompare(a.logged_at || ''))
+    .filter(l => {
+      const k = `${l.exercise_id}:${l.set_number}`;
+      if (dedupSeen.has(k)) return false;
+      dedupSeen.add(k);
+      return true;
+    });
 
   // Group completed logs by exercise, preserving set order
   const grouped = {};
