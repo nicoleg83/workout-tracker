@@ -922,7 +922,8 @@ function isExerciseEmpty(exId) {
 function exerciseProgress(exercises) {
   let done = 0, total = 0;
   for (const ex of exercises) {
-    if (state.skipped.has(ex.id) || isExerciseEmpty(ex.id)) continue;
+    // Skip explicitly-skipped exercises and note-only items (Warmup, Abs)
+    if (state.skipped.has(ex.id) || ex.sets_target === 0) continue;
     const logs = state.setLogs[ex.id] || [];
     done += logs.filter(s => s.completed).length;
     total += logs.length;
