@@ -1171,3 +1171,32 @@ body {
   transition: color 0.15s;
 }
 .section-rename-btn:active { color: var(--pink); }
+
+/* ── Session history inline note editing ── */
+.sdet-note-edit {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  background: none;
+  border: none;
+  border-top: 1px solid transparent;
+  color: var(--text2);
+  font-size: 13px;
+  font-family: inherit;
+  line-height: 1.55;
+  padding: 8px 0 0;
+  margin-top: 6px;
+  resize: none;
+  overflow: hidden;
+  min-height: 32px;
+  transition: border-top-color 0.15s, color 0.15s;
+}
+.sdet-note-edit:focus {
+  outline: none;
+  border-top-color: var(--border, rgba(255,255,255,.1));
+  color: var(--text);
+}
+.sdet-note-edit::placeholder {
+  color: var(--text3);
+  font-style: italic;
+}

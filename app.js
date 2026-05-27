@@ -863,6 +863,57 @@ function saveExerciseNote(exerciseId, note) {
   state.exerciseNotes[exerciseId] = note;
 }
 
+// Save an edited note from session history back to session.notes JSON.
+// Works for both new-format sessions (already have meta) and legacy sessions
+// (reconstructs meta from master exercise list on first edit).
+async function saveHistoryNote(exerciseId, note) {
+  const session = state.historySession;
+  if (!session) return;
+
+  // Parse existing meta or build it fresh for legacy sessions
+  let meta = null;
+  if (session.notes) {
+    try { meta = JSON.parse(session.notes); } catch (_) {}
+    if (!meta?.exercises) meta = null;
+  }
+
+  if (!meta) {
+    // Legacy session: reconstruct full exercise list so we can store notes going forward
+    const dayExercises = state.exercises
+      .filter(e => e.day === session.day)
+      .sort((a, b) => a.sort_order - b.sort_order);
+    const loggedExIds = new Set(
+      (state.historyLogs || []).filter(l => l.completed).map(l => l.exercise_id)
+    );
+    const knownIds = new Set(dayExercises.map(e => e.id));
+    const unknownIds = [...loggedExIds].filter(id => !knownIds.has(id));
+
+    const exList = [
+      { id: `warmup-${session.id}`, name: 'Warmup', sets_target: 0, section: 'Warmup', reps_target: '', note: '' },
+      ...dayExercises
+        .filter(e => loggedExIds.has(e.id))
+        .map(e => ({ id: e.id, name: e.name, sets_target: e.sets_target, section: e.section || '', reps_target: e.reps_target || '', note: '' })),
+      ...unknownIds.map(id => ({ id, name: 'Custom Exercise', sets_target: 1, section: '', reps_target: '', note: '' })),
+      { id: `abs-${session.id}`, name: 'Abs', sets_target: 0, section: 'Abs', reps_target: '', note: '' },
+    ];
+    meta = { v: 1, exercises: exList, skipped: [] };
+  }
+
+  // Update the note for this exercise (add entry if somehow missing)
+  const entry = meta.exercises.find(e => e.id === exerciseId);
+  if (entry) {
+    entry.note = note;
+  } else {
+    meta.exercises.push({ id: exerciseId, name: exerciseId, sets_target: 1, section: '', reps_target: '', note });
+  }
+
+  const updated = { ...session, notes: JSON.stringify(meta) };
+  state.historySession = updated;
+  await DB.put('sessions', updated);
+  await DB.queueSync('sessions', 'update', updated);
+  syncIfOnline();
+}
+
 function isExerciseEmpty(exId) {
   const logs = state.setLogs[exId] || [];
   return logs.length > 0 && !logs.some(s => s.completed || s.weight_lbs || s.reps);
@@ -1558,26 +1609,20 @@ function renderSessionDetail() {
     return `
       <div class="card">
         <div class="sdet-ex-name">${name}</div>
-        ${exNote ? `<div style="font-size:13px;color:var(--text2);font-style:italic;margin-bottom:10px;line-height:1.5">${exNote}</div>` : ''}
         <div class="sdet-set-header"><span>Set</span><span>Weight</span><span>Reps</span><span></span></div>
         ${rows}
+        <textarea class="sdet-note-edit" data-edit-ex-id="${exId}" placeholder="Add notes…" rows="2">${exNote || ''}</textarea>
       </div>`;
   }
 
   let exerciseCards = '';
 
-  // Helper: render a note-only exercise card (Warmup, Abs, etc.)
-  // showPlaceholder=true (new sessions): show "No notes added" hint when empty
-  // showPlaceholder=false (legacy): notes were never captured, show nothing
-  function renderNoteCard(name, note, showPlaceholder = true) {
+  // Helper: render a note-only exercise card (Warmup, Abs, etc.) with editable note
+  function renderNoteCard(exId, name, note) {
     return `
       <div class="card">
         <div class="sdet-ex-name" style="color:var(--text2)">${name}</div>
-        ${note
-          ? `<div style="font-size:14px;color:var(--text);line-height:1.5">${note}</div>`
-          : showPlaceholder
-            ? `<div style="font-size:13px;color:var(--text3);font-style:italic">No notes added</div>`
-            : ''}
+        <textarea class="sdet-note-edit" data-edit-ex-id="${exId}" placeholder="Add notes…" rows="2">${note || ''}</textarea>
       </div>`;
   }
 
@@ -1590,18 +1635,14 @@ function renderSessionDetail() {
 
       if (isNoteOnly) {
         // Warmup, Abs, or any note-only exercise
-        exerciseCards += renderNoteCard(name, note);
+        exerciseCards += renderNoteCard(id, name, note);
       } else if (sets.length) {
         // Regular exercise with logged sets
         const resolvedName = state.exercises.find(e => e.id === id)?.name || name;
         exerciseCards += renderSetCard(id, resolvedName, sets, note);
       } else if (note) {
-        // No sets logged but has a note
-        exerciseCards += `
-          <div class="card">
-            <div class="sdet-ex-name">${name}</div>
-            <div style="font-size:13px;color:var(--text2);font-style:italic;line-height:1.5">${note}</div>
-          </div>`;
+        // No sets logged but has a note — still show editable card
+        exerciseCards += renderNoteCard(id, name, note);
       }
       // Silently omit exercises with no sets and no note
     }
@@ -1615,8 +1656,8 @@ function renderSessionDetail() {
 
     const loggedIds = new Set(Object.keys(logsByEx));
 
-    // Warmup (always present — notes not available for legacy sessions)
-    exerciseCards += renderNoteCard('Warmup', '', false);
+    // Warmup (editable note — empty until user adds one)
+    exerciseCards += renderNoteCard(`warmup-${session.id}`, 'Warmup', '');
 
     // Day exercises that have set logs, in their natural sort order
     for (const ex of dayExercises) {
@@ -1632,8 +1673,8 @@ function renderSessionDetail() {
       exerciseCards += renderSetCard(id, 'Custom Exercise', sets, '');
     }
 
-    // Abs (always present — notes not available for legacy sessions)
-    exerciseCards += renderNoteCard('Abs', '', false);
+    // Abs (editable note — empty until user adds one)
+    exerciseCards += renderNoteCard(`abs-${session.id}`, 'Abs', '');
   }
 
   return `${header}${statBar}${exerciseCards}`;
@@ -2038,9 +2079,21 @@ function bindViewEvents() {
     btn.addEventListener('click', () => deleteSession(btn.dataset.deleteSession));
   });
 
-  // Notes textarea
+  // Active-session notes textarea
   view.querySelectorAll('.notes-textarea').forEach(ta => {
     ta.addEventListener('input', () => saveExerciseNote(ta.dataset.exId, ta.value));
+  });
+
+  // History session notes — editable inline, saves on blur
+  view.querySelectorAll('.sdet-note-edit').forEach(ta => {
+    // Auto-size to fit content on initial render
+    ta.style.height = 'auto';
+    ta.style.height = ta.scrollHeight + 'px';
+    ta.addEventListener('input', () => {
+      ta.style.height = 'auto';
+      ta.style.height = ta.scrollHeight + 'px';
+    });
+    ta.addEventListener('blur', () => saveHistoryNote(ta.dataset.editExId, ta.value.trim()));
   });
 
   // Custom exercise name edit
