@@ -17,6 +17,14 @@ const state = {
   detailExercise: null,
   historySession: null,
   historyLogs: [],
+  progressDay: null,
+  progressExercise: null,
+  progressRange: '3M',
+  prCache: null,
+  lastCache: null,
+  historyCache: null,
+  progressLoaded: false,
+  sessionPRCount: 0,
   loading: false,
   seeding: false,
 };
@@ -207,6 +215,64 @@ async function loadLastLogs(day) {
   }
 }
 
+async function loadProgressData() {
+  const allLogs = await DB.getAll('set_logs');
+  const completed = allLogs.filter(l => l.completed && l.weight_lbs != null);
+  const sessionDateMap = {};
+  for (const s of state.sessions) sessionDateMap[s.id] = s.date;
+
+  const byEx = {};
+  for (const log of completed) {
+    const date = sessionDateMap[log.session_id];
+    if (!date) continue;
+    if (!byEx[log.exercise_id]) byEx[log.exercise_id] = {};
+    if (!byEx[log.exercise_id][log.session_id]) {
+      byEx[log.exercise_id][log.session_id] = { date, sets: [] };
+    }
+    byEx[log.exercise_id][log.session_id].sets.push(log);
+  }
+
+  state.prCache = {};
+  state.lastCache = {};
+  state.historyCache = {};
+
+  for (const [exId, sessMap] of Object.entries(byEx)) {
+    const history = Object.entries(sessMap)
+      .map(([sid, { date, sets }]) => {
+        const best = sets.reduce((b, s) =>
+          (!b || s.weight_lbs > b.weight_lbs) ? s : b, null);
+        return { sessionId: sid, date, sets: sets.sort((a, b) => a.set_number - b.set_number), bestSet: best };
+      })
+      .sort((a, b) => b.date.localeCompare(a.date));
+    state.historyCache[exId] = history;
+    if (history.length > 0) state.lastCache[exId] = history[0];
+    let pr = null;
+    for (const sess of history) {
+      if (!pr || sess.bestSet.weight_lbs > pr.weight_lbs) {
+        pr = { weight_lbs: sess.bestSet.weight_lbs, reps: sess.bestSet.reps, date: sess.date };
+      }
+    }
+    if (pr) state.prCache[exId] = pr;
+  }
+  state.progressLoaded = true;
+}
+
+function checkPR(exerciseId, weight, reps) {
+  if (!weight || !state.prCache) return;
+  const w = parseFloat(weight);
+  if (!w) return;
+  const pr = state.prCache[exerciseId];
+  if (!pr || w > pr.weight_lbs) {
+    state.prCache[exerciseId] = { weight_lbs: w, reps: parseInt(reps) || 0, date: today() };
+    const ex = state.sessionExercises.find(e => e.id === exerciseId)
+            || state.exercises.find(e => e.id === exerciseId);
+    const name = ex?.name || 'Exercise';
+    state.sessionPRCount = (state.sessionPRCount || 0) + 1;
+    state.progressLoaded = false;
+    toast(`New PR — ${name} 🏆`, 'success');
+  }
+}
+
 // ── Init set logs for a session ──────────────────────────────────
 function initSetLogs(exercises) {
   state.setLogs = {};
@@ -248,6 +314,7 @@ function navigateTo(view, data = {}) {
   state.view = view;
   if (data.exercise) state.detailExercise = data.exercise;
   if (data.day) state.activeDay = data.day;
+  if (data.exId !== undefined) state.progressExercise = data.exId;
   renderView();
 }
 
@@ -329,6 +396,8 @@ async function endAndGoHome() {
   state.sessionExercises = [];
   state.defaultExerciseIds = [];
   state.exerciseNotes = {};
+  state.progressLoaded = false;
+  state.sessionPRCount = 0;
   stopRestTimer();
   await loadSessions();
   setTab('home');
@@ -349,6 +418,8 @@ async function cancelSession() {
   state.sessionExercises = [];
   state.defaultExerciseIds = [];
   state.exerciseNotes = {};
+  state.progressLoaded = false;
+  state.sessionPRCount = 0;
   stopRestTimer();
   await loadSessions();
   setTab('home');
@@ -397,6 +468,7 @@ async function toggleComplete(exerciseId, setIndex) {
     await DB.put('set_logs', log);
     await DB.queueSync('set_logs', 'insert', log);
     syncIfOnline();
+    if (log.weight_lbs) checkPR(exerciseId, log.weight_lbs, log.reps);
   }
 
   updateSyncDot();
@@ -578,13 +650,15 @@ function renderView() {
   const el = document.getElementById('main-view');
   if (!el) return;
   switch (state.view) {
-    case 'home':     el.innerHTML = renderHome(); break;
-    case 'workout':  el.innerHTML = renderWorkout(); break;
-    case 'exercise-detail': el.innerHTML = renderExerciseDetail(); break;
-    case 'summary':  el.innerHTML = renderSummary(); break;
-    case 'history':         el.innerHTML = renderHistory(); break;
-    case 'session-detail':  el.innerHTML = renderSessionDetail(); break;
-    default:         el.innerHTML = renderHome();
+    case 'home':              el.innerHTML = renderHome(); break;
+    case 'workout':           el.innerHTML = renderWorkout(); break;
+    case 'exercise-detail':   el.innerHTML = renderExerciseDetail(); break;
+    case 'summary':           el.innerHTML = renderSummary(); break;
+    case 'history':           el.innerHTML = renderHistory(); break;
+    case 'session-detail':    el.innerHTML = renderSessionDetail(); break;
+    case 'progress':          el.innerHTML = renderProgress(); break;
+    case 'progress-exercise': el.innerHTML = renderProgressExercise(); break;
+    default:                  el.innerHTML = renderHome();
   }
   el.scrollTop = 0;
   bindViewEvents();
@@ -791,6 +865,42 @@ function renderExerciseDetail() {
     </div>`;
   }
 
+  // Last session card (shown during active workout when history exists)
+  let lastSessionCard = '';
+  if (inActiveSession && !isNoteOnly) {
+    const lastSets = (state.lastLogs[ex.id] || []).filter(s => s.completed).sort((a, b) => a.set_number - b.set_number);
+    if (lastSets.length > 0) {
+      const prData = state.prCache?.[ex.id];
+      const lastDate = state.lastCache?.[ex.id]?.date;
+      const setRows = lastSets.map(s =>
+        `<div class="last-set-row">
+          <div class="last-set-num">Set ${s.set_number}</div>
+          <div class="last-set-val">${s.weight_lbs != null ? s.weight_lbs + ' lbs' : '—'} &nbsp;×&nbsp; ${s.reps != null ? s.reps + ' reps' : '—'}</div>
+        </div>`
+      ).join('');
+      const prRow = prData ? `
+        <div class="last-pr-row">
+          <div class="last-pr-left">
+            <span class="last-pr-label">🏆 PR</span>
+            <div>
+              <div class="last-pr-val">${prData.weight_lbs} lbs × ${prData.reps}</div>
+              <div class="last-pr-sub">${fmtDate(prData.date)}</div>
+            </div>
+          </div>
+          <button class="last-see-history" data-prog-ex="${ex.id}">See history ›</button>
+        </div>` : '';
+      lastSessionCard = `
+        <div class="last-session-card">
+          <div class="last-session-header">
+            <div class="last-session-title">Last session</div>
+            ${lastDate ? `<div class="last-session-date">${fmtDate(lastDate)}</div>` : ''}
+          </div>
+          <div class="last-session-sets">${setRows}</div>
+          ${prRow}
+        </div>`;
+    }
+  }
+
   // Notes textarea (always shown)
   const notesCard = `<div class="card">
     <div class="detail-section-label">Notes</div>
@@ -824,6 +934,7 @@ function renderExerciseDetail() {
     </div>
     ${mediaEl}
     ${infoCard}
+    ${lastSessionCard}
     ${notesCard}
     ${setRows}`;
 }
@@ -863,7 +974,7 @@ function renderSetRow(exerciseId, i, rowEl) {
 // ── Summary view ─────────────────────────────────────────────────
 function renderSummary() {
   const { completedSets, totalSets, exercises } = state.summaryData || {};
-  const prs = 0;
+  const prs = state.sessionPRCount || 0;
   const skippedCount = state.skipped.size;
   const pct = totalSets ? Math.round((completedSets/totalSets)*100) : 0;
   const dayNames = { 'Day 1':'Push', 'Day 2':'Pull', 'Day 3':'Legs' };
@@ -1033,6 +1144,251 @@ function renderSessionDetail() {
   return `${header}${statBar}${exerciseCards}`;
 }
 
+// ── Progress tab ──────────────────────────────────────────────────
+function renderProgress() {
+  if (!state.progressLoaded) {
+    loadProgressData().then(() => { if (state.view === 'progress') renderView(); });
+    return `<div class="page-header"><div class="page-title">Progress</div></div>
+      <div class="loading"><div class="spinner"></div><div>Loading…</div></div>`;
+  }
+
+  const dayDefs = [
+    { key: null, label: 'All' },
+    { key: 'Day 1', label: 'Push' },
+    { key: 'Day 2', label: 'Pull' },
+    { key: 'Day 3', label: 'Legs' },
+  ];
+  const chips = dayDefs.map(d =>
+    `<button class="prog-chip ${state.progressDay === d.key ? 'active' : ''}" data-prog-day="${d.key || ''}">${d.label}</button>`
+  ).join('');
+
+  let exercises = state.exercises.filter(e => !e._custom && e.sets_target > 0);
+  if (state.progressDay) exercises = exercises.filter(e => e.day === state.progressDay);
+  exercises.sort((a, b) => a.sort_order - b.sort_order);
+
+  const dayNames = { 'Day 1': 'Push', 'Day 2': 'Pull', 'Day 3': 'Legs' };
+  const grouped = {};
+  const dayOrder = [];
+  for (const ex of exercises) {
+    if (!grouped[ex.day]) { grouped[ex.day] = []; dayOrder.push(ex.day); }
+    grouped[ex.day].push(ex);
+  }
+
+  let rowsHtml = '';
+  for (const day of dayOrder) {
+    rowsHtml += `<div class="section-label" style="margin-top:16px">${dayNames[day] || day} · ${day}</div>`;
+    for (const ex of grouped[day]) {
+      const last = state.lastCache?.[ex.id];
+      const pr = state.prCache?.[ex.id];
+      const history = state.historyCache?.[ex.id] || [];
+
+      let trendEl = '';
+      if (history.length >= 2) {
+        const lastW = history[0].bestSet?.weight_lbs || 0;
+        const prevW = history[1].bestSet?.weight_lbs || 0;
+        if (lastW > prevW) trendEl = `<div class="prog-trend up">↑</div>`;
+        else if (lastW < prevW) trendEl = `<div class="prog-trend down">↓</div>`;
+        else trendEl = `<div class="prog-trend flat">→</div>`;
+      }
+
+      const thumb = IMAGE_KEYS.has(ex.image_key)
+        ? `<img class="prog-thumb-img" src="icons/exercises/${ex.image_key}.jpg" alt="" loading="lazy">`
+        : `<div class="prog-thumb-icon">💪</div>`;
+
+      const isPR = pr && last && pr.date === last.date;
+      const prBadge = isPR ? ` <span class="pr-badge">🏆 PR</span>` : '';
+
+      const lastVal = last
+        ? `${last.bestSet.weight_lbs} lbs × ${last.bestSet.reps}${prBadge}`
+        : `<span class="prog-no-data">No data yet</span>`;
+
+      rowsHtml += `
+        <div class="prog-row" data-prog-ex="${ex.id}">
+          <div class="prog-thumb">${thumb}</div>
+          <div class="prog-info">
+            <div class="prog-name">${ex.name}</div>
+            <div class="prog-stats">
+              <div class="prog-stat">
+                <div class="prog-stat-label">Last</div>
+                <div class="prog-stat-value">${lastVal}</div>
+              </div>
+              ${pr ? `<div class="prog-stat">
+                <div class="prog-stat-label">PR 🏆</div>
+                <div class="prog-stat-value prog-pr-val">${pr.weight_lbs} lbs × ${pr.reps}</div>
+              </div>` : ''}
+            </div>
+          </div>
+          <div class="prog-right">
+            ${trendEl}
+            <div class="prog-chevron">›</div>
+          </div>
+        </div>`;
+    }
+  }
+
+  if (!rowsHtml) {
+    rowsHtml = `<div class="empty">
+      <div class="empty-icon">📊</div>
+      <div class="empty-title">No data yet</div>
+      <div class="empty-body">Complete a workout to track your progress here.</div>
+    </div>`;
+  }
+
+  return `
+    <div class="page-header">
+      <div class="page-title">Progress</div>
+    </div>
+    <div class="prog-chip-row">${chips}</div>
+    ${rowsHtml}`;
+}
+
+function buildProgressChart(history, pr, range) {
+  if (history.length < 1) return '';
+
+  const svgW = 328, svgH = 140;
+  const leftPad = 28, rightPad = 12, topPad = 16, bottomPad = 22;
+  const chartW = svgW - leftPad - rightPad;
+  const chartH = svgH - topPad - bottomPad;
+
+  const weights = history.map(h => h.bestSet.weight_lbs);
+  const rawMax = Math.max(...weights, pr?.weight_lbs || 0);
+  const rawMin = Math.min(...weights);
+  const span = rawMax - rawMin || 1;
+  const yStep = Math.max(5, Math.ceil(span / 3 / 5) * 5);
+  const yMin = Math.floor(rawMin / yStep) * yStep;
+  const yMax = yMin + yStep * 4;
+  const yRange = yMax - yMin || 1;
+
+  const toY = w => topPad + chartH - ((w - yMin) / yRange) * chartH;
+  const toX = i => leftPad + (history.length === 1 ? chartW / 2 : (i / (history.length - 1)) * chartW);
+
+  const yLabels = [yMin + yStep * 3, yMin + yStep * 2, yMin + yStep, yMin];
+  const yAxisHtml = yLabels.map(v =>
+    `<text x="0" y="${(toY(v) + 4).toFixed(1)}" fill="#606060" font-size="10" font-family="-apple-system,sans-serif">${v}</text>`
+  ).join('');
+  const gridLines = yLabels.map(v =>
+    `<line x1="${leftPad}" y1="${toY(v).toFixed(1)}" x2="${svgW}" y2="${toY(v).toFixed(1)}" stroke="#242424" stroke-width="1"/>`
+  ).join('');
+
+  let prLine = '';
+  if (pr && pr.weight_lbs >= yMin && pr.weight_lbs <= yMax) {
+    const py = toY(pr.weight_lbs).toFixed(1);
+    prLine = `<line x1="${leftPad}" y1="${py}" x2="${svgW}" y2="${py}" stroke="#f59e0b" stroke-width="1" stroke-dasharray="4,3" opacity="0.4"/>`;
+  }
+
+  const pts = history.map((h, i) => `${toX(i).toFixed(1)},${toY(h.bestSet.weight_lbs).toFixed(1)}`);
+  const polyPoints = pts.join(' ');
+  const bottomY = topPad + chartH;
+  const fillPoints = `${pts.join(' ')} ${toX(history.length - 1).toFixed(1)},${bottomY} ${toX(0).toFixed(1)},${bottomY}`;
+
+  const prDate = pr?.date;
+  const dots = history.map((h, i) => {
+    const cx = toX(i).toFixed(1), cy = toY(h.bestSet.weight_lbs).toFixed(1);
+    if (h.date === prDate) {
+      return `<circle cx="${cx}" cy="${cy}" r="7" fill="#f59e0b" stroke="#f59e0b" stroke-width="2"/>
+        <text x="${cx}" y="${(parseFloat(cy) - 11).toFixed(1)}" fill="#f59e0b" font-size="10" font-family="-apple-system,sans-serif" text-anchor="middle" font-weight="700">PR</text>`;
+    }
+    return `<circle cx="${cx}" cy="${cy}" r="5" fill="#1a1a1a" stroke="#E91E8C" stroke-width="2"/>`;
+  }).join('');
+
+  const maxLabels = 5;
+  const step = Math.max(1, Math.ceil(history.length / maxLabels));
+  const xLabels = history.map((h, i) => {
+    if (i % step !== 0 && i !== history.length - 1) return '';
+    const d = new Date(h.date + 'T00:00:00');
+    const label = `${d.toLocaleString('en-US', { month: 'short' })} ${d.getDate()}`;
+    const fill = h.date === prDate ? '#f59e0b' : '#606060';
+    const fw = h.date === prDate ? '700' : '400';
+    return `<text x="${toX(i).toFixed(1)}" y="${svgH - 4}" fill="${fill}" font-size="9" font-family="-apple-system,sans-serif" text-anchor="middle" font-weight="${fw}">${label}</text>`;
+  }).join('');
+
+  const rangeBtns = ['1M', '3M', 'All'].map(r =>
+    `<button class="prog-range-btn ${state.progressRange === r ? 'active' : ''}" data-prog-range="${r}">${r}</button>`
+  ).join('');
+
+  return `
+    <div class="prog-chart-wrap">
+      <div class="prog-chart-title-row">
+        <div class="prog-chart-title">Top set weight</div>
+        <div class="prog-range-row">${rangeBtns}</div>
+      </div>
+      <svg viewBox="0 0 ${svgW} ${svgH}" style="width:100%;overflow:visible" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <linearGradient id="prog-grad" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#E91E8C"/>
+            <stop offset="100%" stop-color="#E91E8C" stop-opacity="0"/>
+          </linearGradient>
+        </defs>
+        ${yAxisHtml}${gridLines}${prLine}
+        ${history.length > 1 ? `<polyline points="${polyPoints}" fill="none" stroke="#E91E8C" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round" opacity="0.7"/>` : ''}
+        ${history.length > 1 ? `<polygon points="${fillPoints}" fill="url(#prog-grad)" opacity="0.12"/>` : ''}
+        ${dots}${xLabels}
+      </svg>
+    </div>`;
+}
+
+function renderProgressExercise() {
+  const exId = state.progressExercise;
+  const ex = state.exercises.find(e => e.id === exId);
+  if (!ex) return renderProgress();
+
+  const history = state.historyCache?.[exId] || [];
+  const pr = state.prCache?.[exId];
+
+  const sessionCount = history.length;
+  const firstDate = history.length > 0 ? fmtDate(history[history.length - 1].date) : null;
+
+  const prBar = `
+    <div class="prog-pr-summary">
+      <div class="prog-pr-item">
+        <div class="prog-pr-label">All-Time PR 🏆</div>
+        <div class="prog-pr-value" style="color:var(--gold)">${pr ? `${pr.weight_lbs} lbs × ${pr.reps}` : '—'}</div>
+        ${pr ? `<div class="prog-pr-sub">${fmtDate(pr.date)}</div>` : ''}
+      </div>
+      <div class="prog-pr-divider"></div>
+      <div class="prog-pr-item" style="text-align:right">
+        <div class="prog-pr-label">Sessions</div>
+        <div class="prog-pr-value">${sessionCount}</div>
+        ${firstDate ? `<div class="prog-pr-sub">since ${firstDate}</div>` : ''}
+      </div>
+    </div>`;
+
+  const range = state.progressRange || '3M';
+  const cutoffDays = { '1M': 30, '3M': 90, 'All': Infinity };
+  const maxDays = cutoffDays[range] ?? 90;
+  const nowMs = new Date(today() + 'T00:00:00').getTime();
+  const chartHistory = history
+    .filter(h => (nowMs - new Date(h.date + 'T00:00:00').getTime()) / 86400000 <= maxDays)
+    .slice().reverse();
+
+  const chartHtml = buildProgressChart(chartHistory, pr, range);
+
+  const histRows = history.map(h => {
+    const isPR = pr && h.date === pr.date;
+    return `
+      <div class="prog-hist-row">
+        <div class="prog-hist-date">${fmtDate(h.date)}</div>
+        <div class="prog-hist-info">
+          <div class="prog-hist-best">${h.bestSet.weight_lbs} lbs × ${h.bestSet.reps}</div>
+          <div class="prog-hist-sub">${h.sets.length} set${h.sets.length !== 1 ? 's' : ''} total</div>
+        </div>
+        ${isPR ? `<div class="pr-badge">🏆 PR</div>` : ''}
+      </div>`;
+  }).join('');
+
+  return `
+    <div class="page-header">
+      <button class="back-btn" onclick="navigateTo('progress')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+      </button>
+      <div class="page-title" style="font-size:18px">${ex.name}</div>
+    </div>
+    ${prBar}
+    ${chartHtml}
+    <div class="section-label" style="margin-top:16px">Session history</div>
+    ${histRows || `<div class="empty"><div class="empty-icon">📋</div><div class="empty-body">No sessions yet.</div></div>`}`;
+}
+
 // ── History view ──────────────────────────────────────────────────
 function renderHistory() {
   if (!state.sessions.length) {
@@ -1189,6 +1545,45 @@ function bindViewEvents() {
     });
   });
 
+  // Progress filter chips
+  view.querySelectorAll('.prog-chip[data-prog-day]').forEach(chip => {
+    chip.addEventListener('click', () => {
+      const val = chip.dataset.progDay;
+      state.progressDay = val || null;
+      renderView();
+    });
+  });
+
+  // Progress exercise row → drill-in
+  view.querySelectorAll('.prog-row[data-prog-ex]').forEach(row => {
+    row.addEventListener('click', () => {
+      state.progressExercise = row.dataset.progEx;
+      state.view = 'progress-exercise';
+      renderView();
+    });
+  });
+
+  // Chart range buttons
+  view.querySelectorAll('.prog-range-btn[data-prog-range]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.progressRange = btn.dataset.progRange;
+      renderView();
+    });
+  });
+
+  // "See history" from exercise detail → progress drill-in
+  view.querySelectorAll('.last-see-history[data-prog-ex]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.progressExercise = btn.dataset.progEx;
+      state.tab = 'progress';
+      document.querySelectorAll('.tab-btn').forEach(b => {
+        b.classList.toggle('active', b.dataset.tab === 'progress');
+      });
+      state.view = 'progress-exercise';
+      renderView();
+    });
+  });
+
   // Drag-and-drop: nested SortableJS (sections + exercises within sections)
   if (sectionSortEl && typeof Sortable !== 'undefined') {
     Sortable.create(sectionSortEl, {
@@ -1323,6 +1718,11 @@ async function handleLogout() {
   state.activeDay = null;
   state.setLogs = {};
   state.lastLogs = {};
+  state.prCache = null;
+  state.lastCache = null;
+  state.historyCache = null;
+  state.progressLoaded = false;
+  state.sessionPRCount = 0;
   showLoginScreen();
 }
 
@@ -1333,6 +1733,7 @@ async function finishAuth(session) {
   await loadExercises(); // Must run before syncIfOnline so exercises exist in Supabase for local-* remap
   await syncIfOnline();
   await loadSessions();
+  await loadProgressData();
   document.querySelectorAll('.tab-btn').forEach(btn => {
     btn.addEventListener('click', () => setTab(btn.dataset.tab));
   });
@@ -1366,6 +1767,7 @@ async function init() {
   await loadExercises(); // Must run before syncIfOnline so exercises exist in Supabase for local-* remap
   await syncIfOnline();
   await loadSessions();
+  await loadProgressData();
 
   document.querySelectorAll('.tab-btn').forEach(btn => {
     btn.addEventListener('click', () => setTab(btn.dataset.tab));
