@@ -1401,8 +1401,8 @@ async function finishAuth(session) {
   state.user = session.user;
   document.getElementById('tab-bar').style.display = '';
   document.getElementById('main-view').innerHTML = `<div class="loading"><div class="spinner"></div><div>Loading…</div></div>`;
+  await loadExercises(); // Must run before syncIfOnline so exercises exist in Supabase for local-* remap
   await syncIfOnline();
-  await loadExercises();
   await loadSessions();
   document.querySelectorAll('.tab-btn').forEach(btn => {
     btn.addEventListener('click', () => setTab(btn.dataset.tab));
@@ -1434,8 +1434,8 @@ async function init() {
 
   document.getElementById('main-view').innerHTML = `<div class="loading"><div class="spinner"></div><div>Loading…</div></div>`;
 
-  await syncIfOnline(); // Flush any pending syncs before loading
-  await loadExercises();
+  await loadExercises(); // Must run before syncIfOnline so exercises exist in Supabase for local-* remap
+  await syncIfOnline();
   await loadSessions();
 
   document.querySelectorAll('.tab-btn').forEach(btn => {
