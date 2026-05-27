@@ -142,10 +142,14 @@ async function insert(table, payload) {
     return restReq(`/${table}?id=eq.${id}`, { method: 'DELETE' });
   }
 
+  async function deleteSetLogsBySession(sessionId) {
+    return restReq(`/set_logs?session_id=eq.${sessionId}`, { method: 'DELETE' });
+  }
+
   return {
     restoreSession, signIn, signUp, signOut, getUser,
     getExercises, insertExercises,
-    getSessions, getSetLogs,
+    getSessions, getSetLogs, deleteSetLogsBySession,
     insert, update, deleteRecord,
   };
 })();

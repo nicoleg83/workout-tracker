@@ -149,6 +149,16 @@ async function loadSessions() {
   if (navigator.onLine) {
     try {
       const sessions = await Supabase.getSessions();
+      const remoteIds = new Set(sessions.map(s => s.id));
+      // Remove sessions deleted on another device (bulkPut only adds/updates, never removes)
+      const cached = await DB.getAll('sessions');
+      for (const s of cached) {
+        if (s.user_id === state.user?.id && !remoteIds.has(s.id)) {
+          await DB.del('sessions', s.id);
+          const logs = await DB.getAll('set_logs', 'session_id', s.id);
+          for (const l of logs) await DB.del('set_logs', l.id);
+        }
+      }
       await DB.bulkPut('sessions', sessions);
     } catch (_) {}
   }
@@ -922,7 +932,8 @@ async function deleteSession(sessionId) {
   for (const log of logs) await DB.del('set_logs', log.id);
   await DB.del('sessions', sessionId);
 
-  // Remove from Supabase (FK cascade deletes set_logs too)
+  // Remove from Supabase: delete set_logs first (FK constraint), then session
+  try { await Supabase.deleteSetLogsBySession(sessionId); } catch (_) {}
   try { await Supabase.deleteRecord('sessions', sessionId); } catch (_) {}
 
   state.sessions = state.sessions.filter(s => s.id !== sessionId);
@@ -1049,17 +1060,8 @@ function renderHistory() {
   return `
     <div class="page-header">
       <div class="page-title">History</div>
-      <button class="btn btn-ghost" style="font-size:13px;padding:6px 10px" onclick="refreshHistory()">↻ Sync</button>
     </div>
     ${cards}`;
-}
-
-async function refreshHistory() {
-  toast('Syncing…');
-  await syncIfOnline();
-  await loadSessions();
-  renderView();
-  toast('History refreshed');
 }
 
 // ── Rest timer render ─────────────────────────────────────────────
