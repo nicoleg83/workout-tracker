@@ -142,7 +142,8 @@ const Supabase = (() => {
   async function insert(table, payload) {
     return restReq(`/${table}`, {
       method: 'POST',
-      headers: { 'Prefer': 'return=representation' },
+      // merge-duplicates = upsert on conflict, making retries safe (no 409 loops)
+      headers: { 'Prefer': 'return=minimal,resolution=merge-duplicates' },
       body: JSON.stringify(payload),
     });
   }

@@ -108,24 +108,32 @@ function updateSyncDot() {
 
 // ── Data bootstrap ───────────────────────────────────────────────
 async function loadExercises() {
-  let exs = await DB.getAll('exercises');
-  if (exs.length > 0) { state.exercises = exs; return; }
-
-  if (!navigator.onLine) {
-    // Offline with no cache: use bundled static data as fallback
-    state.exercises = EXERCISES.map((e, i) => ({ ...e, id: `local-${i}` }));
-    return;
+  // Always fetch from Supabase when online so real UUIDs replace any stale local-* cache
+  if (navigator.onLine) {
+    try {
+      let exs = await Supabase.getExercises();
+      if (exs.length === 0) {
+        await seedExercises();
+        exs = await Supabase.getExercises();
+      }
+      // Remove any stale local-* entries before caching real UUIDs
+      const cached = await DB.getAll('exercises');
+      for (const ex of cached) {
+        if (typeof ex.id === 'string' && ex.id.startsWith('local-')) {
+          await DB.del('exercises', ex.id);
+        }
+      }
+      await DB.bulkPut('exercises', exs);
+      state.exercises = exs;
+      return;
+    } catch (_) {}
   }
 
-  try {
-    exs = await Supabase.getExercises();
-    if (exs.length === 0) {
-      await seedExercises();
-      exs = await Supabase.getExercises();
-    }
-    await DB.bulkPut('exercises', exs);
-    state.exercises = exs;
-  } catch (err) {
+  // Offline: use IndexedDB cache, or static fallback if nothing cached
+  const cached = await DB.getAll('exercises');
+  if (cached.length > 0) {
+    state.exercises = cached;
+  } else {
     state.exercises = EXERCISES.map((e, i) => ({ ...e, id: `local-${i}` }));
   }
 }
