@@ -257,13 +257,16 @@ async function loadProgressData() {
   state.progressLoaded = true;
 }
 
-function checkPR(exerciseId, weight, reps) {
+function checkPR(exerciseId, weight, reps, setIdx) {
   if (!weight || !state.prCache) return;
   const w = parseFloat(weight);
   if (!w) return;
   const pr = state.prCache[exerciseId];
   if (!pr || w > pr.weight_lbs) {
     state.prCache[exerciseId] = { weight_lbs: w, reps: parseInt(reps) || 0, date: today() };
+    if (setIdx !== undefined && state.setLogs[exerciseId]?.[setIdx]) {
+      state.setLogs[exerciseId][setIdx].is_pr = true;
+    }
     const ex = state.sessionExercises.find(e => e.id === exerciseId)
             || state.exercises.find(e => e.id === exerciseId);
     const name = ex?.name || 'Exercise';
@@ -438,6 +441,7 @@ async function toggleComplete(exerciseId, setIndex) {
   if (set.completed) {
     // Un-completing: remove the previously created set_log so it doesn't duplicate
     set.completed = false;
+    set.is_pr = false;
     if (set._logId) {
       await DB.del('set_logs', set._logId);
       const pending = await DB.getAll('pending_sync');
@@ -468,7 +472,7 @@ async function toggleComplete(exerciseId, setIndex) {
     await DB.put('set_logs', log);
     await DB.queueSync('set_logs', 'insert', log);
     syncIfOnline();
-    if (log.weight_lbs) checkPR(exerciseId, log.weight_lbs, log.reps);
+    if (log.weight_lbs) checkPR(exerciseId, log.weight_lbs, log.reps, setIndex);
   }
 
   updateSyncDot();
@@ -943,8 +947,9 @@ function buildSetRow(exerciseId, i, s) {
   const wVal = s.weight_lbs ?? '';
   const rVal = s.reps ?? '';
   const eid = exerciseId;
+  const isPR = s.is_pr;
   return `
-    <div class="set-num">${i + 1}</div>
+    <div class="set-num${isPR ? ' set-num-pr' : ''}">${i + 1}${isPR ? '<span class="set-pr-tag">PR</span>' : ''}</div>
     <div class="set-input-wrap ${s.completed?'completed':''}">
       <button class="adj-btn" data-ex-id="${eid}" data-set-idx="${i}" data-field="w" data-dir="minus">−</button>
       <input class="set-input" type="number" inputmode="decimal" placeholder="lbs" step="any" min="0"
@@ -957,7 +962,7 @@ function buildSetRow(exerciseId, i, s) {
         value="${rVal}" data-ex-id="${eid}" data-set-idx="${i}" data-field="r" />
       <button class="adj-btn" data-ex-id="${eid}" data-set-idx="${i}" data-field="r" data-dir="plus">+</button>
     </div>
-    <button class="complete-btn ${s.completed?'done':''}" data-ex-id="${eid}" data-set-idx="${i}">
+    <button class="complete-btn ${s.completed ? (isPR ? 'done pr' : 'done') : ''}" data-ex-id="${eid}" data-set-idx="${i}">
       ${s.completed ?
         '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5" stroke-linecap="round"><path d="M20 6L9 17l-5-5"/></svg>' :
         '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M20 6L9 17l-5-5"/></svg>'}
