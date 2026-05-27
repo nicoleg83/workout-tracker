@@ -20,6 +20,7 @@ const state = {
   progressDay: null,
   progressExercise: null,
   progressRange: '3M',
+  detailSupersetId: null,
   prCache: null,
   lastCache: null,
   historyCache: null,
@@ -332,6 +333,7 @@ function navigateTo(view, data = {}) {
   if (data.exercise) state.detailExercise = data.exercise;
   if (data.day) state.activeDay = data.day;
   if (data.exId !== undefined) state.progressExercise = data.exId;
+  if (data.supersetId !== undefined) state.detailSupersetId = data.supersetId;
   renderView();
 }
 
@@ -675,6 +677,7 @@ function renderView() {
     case 'session-detail':    el.innerHTML = renderSessionDetail(); break;
     case 'progress':          el.innerHTML = renderProgress(); break;
     case 'progress-exercise': el.innerHTML = renderProgressExercise(); break;
+    case 'superset-detail':   el.innerHTML = renderSupersetDetail(); break;
     default:                  el.innerHTML = renderHome();
   }
   el.scrollTop = 0;
@@ -770,65 +773,111 @@ function renderWorkout() {
 
   for (const { section, exercises: groupExs } of groups) {
     const displaySection = section === 'Warmup + core' ? 'Compound Lifts' : section;
-    html += `<div class="section-group" data-section="${section}">
-      <div class="section-label section-draggable">
-        <span class="section-drag-handle">⠿</span>
-        ${displaySection}
-      </div>
-      <div class="exercise-sortable-inner">`;
+    const supersetId = groupExs[0]?.superset_group && !groupExs[0]._custom ? groupExs[0].superset_group : null;
+    const isSuperset = supersetId && groupExs.every(ex => ex.superset_group === supersetId);
 
-    for (const ex of groupExs) {
-      const logs = state.setLogs[ex.id] || [];
-      const completed = logs.filter(s => s.completed).length;
-      const allDone = ex.sets_target > 0 && completed === logs.length && logs.length > 0;
-      const isSkipped = state.skipped.has(ex.id);
-      const isNoteOnly = ex.sets_target === 0;
-      const note = state.exerciseNotes[ex.id] || '';
+    if (isSuperset) {
+      // ── Superset card ─────────────────────────────────────────────
+      const totalDone = groupExs.reduce((s, ex) => s + (state.setLogs[ex.id] || []).filter(l => l.completed).length, 0);
+      const totalSets = groupExs.reduce((s, ex) => s + (state.setLogs[ex.id] || []).length, 0);
+      const cardDone = totalDone === totalSets && totalSets > 0;
+      html += `<div class="section-group" data-section="${section}">
+        <div class="superset-card ${cardDone ? 'done' : ''}" data-superset-id="${supersetId}">
+          <div class="superset-card-header section-draggable">
+            <div style="display:flex;align-items:center;gap:8px">
+              <span class="section-drag-handle">⠿</span>
+              <span class="superset-card-label">${displaySection}</span>
+            </div>
+            <span class="superset-card-progress">${totalDone}/${totalSets} sets</span>
+          </div>
+          <div class="exercise-sortable-inner">`;
 
-      let thumb = '';
-      if (!isNoteOnly) {
-        thumb = IMAGE_KEYS.has(ex.image_key)
-          ? `<img class="exercise-thumb-img" src="icons/exercises/${ex.image_key}.jpg" alt="" loading="lazy" />`
+      for (const ex of groupExs) {
+        const logs = state.setLogs[ex.id] || [];
+        const completed = logs.filter(s => s.completed).length;
+        const allDone = ex.sets_target > 0 && completed === logs.length && logs.length > 0;
+        const isSkipped = state.skipped.has(ex.id);
+        const thumb = IMAGE_KEYS.has(ex.image_key)
+          ? `<img class="superset-card-thumb-img" src="icons/exercises/${ex.image_key}.jpg" alt="" loading="lazy" />`
           : (ILLUSTRATIONS[ex.image_key] || ILLUSTRATIONS['_placeholder']).replace(/viewBox="[^"]*"/, 'viewBox="0 0 120 160"');
-      } else {
-        thumb = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>`;
+        const statusEl = allDone
+          ? `<svg class="check-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M20 6L9 17l-5-5"/></svg>`
+          : isSkipped
+            ? `<svg class="skip-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6l-12 12M6 6l12 12"/></svg>`
+            : `<span style="font-size:12px;color:var(--text3)">${completed}/${logs.length}</span>`;
+        html += `<div class="exercise-row superset-card-ex" data-ex-id="${ex.id}">
+          <div class="drag-handle">⠿</div>
+          <div class="superset-card-thumb">${thumb}</div>
+          <div class="superset-card-ex-info">
+            <div class="superset-card-ex-name">${ex.name}</div>
+            <div class="superset-card-ex-meta">${ex.sets_target}×${ex.reps_target}</div>
+          </div>
+          <div class="superset-card-ex-status">${statusEl}</div>
+        </div>`;
       }
 
-      const statusEl = isNoteOnly
-        ? (note ? '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="2.5" stroke-linecap="round"><path d="M20 6L9 17l-5-5"/></svg>' : '')
-        : (allDone ? '<svg class="check-icon" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M20 6L9 17l-5-5"/></svg>'
-            : isSkipped ? '<svg class="skip-icon" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6l-12 12M6 6l12 12"/></svg>'
-            : `<span style="font-size:13px;color:var(--text3)">${completed}/${logs.length}</span>`);
-
-      const meta = isNoteOnly
-        ? (note ? `<div class="exercise-row-meta" style="color:var(--text3);font-style:italic;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:160px">${note}</div>` : '<div class="exercise-row-meta">Tap to add notes</div>')
-        : `<div class="exercise-row-meta">${ex.sets_target}×${ex.reps_target}${ex.weight_range ? ' · ' + startingWeight(ex.weight_range) : ''}</div>`;
-
-      // Last session hint
-      const lastSets = (state.lastLogs[ex.id] || []).filter(s => s.completed);
-      let lastHint = '';
-      if (!isNoteOnly && lastSets.length > 0) {
-        const weight = lastSets.find(s => s.weight_lbs)?.weight_lbs;
-        const reps = lastSets.find(s => s.reps)?.reps;
-        const parts = [`${lastSets.length} sets`];
-        if (reps) parts.push(`${reps} reps`);
-        if (weight) parts.push(`${weight} lbs`);
-        lastHint = `<div class="exercise-row-last">Last: ${parts.join(' · ')}</div>`;
-      }
-
-      html += `<div class="exercise-row ${allDone?'done':''} ${isSkipped?'skipped':''} ${isNoteOnly?'note-only':''}" data-ex-id="${ex.id}">
-        <div class="drag-handle">⠿</div>
-        <div class="exercise-row-thumb">${thumb}</div>
-        <div class="exercise-row-info">
-          <div class="exercise-row-name">${ex.name}</div>
-          ${meta}
-          ${lastHint}
+      html += `</div></div></div>`;
+    } else {
+      // ── Normal section ────────────────────────────────────────────
+      html += `<div class="section-group" data-section="${section}">
+        <div class="section-label section-draggable">
+          <span class="section-drag-handle">⠿</span>
+          ${displaySection}
         </div>
-        <div class="exercise-row-status">${statusEl}</div>
-      </div>`;
-    }
+        <div class="exercise-sortable-inner">`;
 
-    html += `</div></div>`;
+      for (const ex of groupExs) {
+        const logs = state.setLogs[ex.id] || [];
+        const completed = logs.filter(s => s.completed).length;
+        const allDone = ex.sets_target > 0 && completed === logs.length && logs.length > 0;
+        const isSkipped = state.skipped.has(ex.id);
+        const isNoteOnly = ex.sets_target === 0;
+        const note = state.exerciseNotes[ex.id] || '';
+
+        let thumb = '';
+        if (!isNoteOnly) {
+          thumb = IMAGE_KEYS.has(ex.image_key)
+            ? `<img class="exercise-thumb-img" src="icons/exercises/${ex.image_key}.jpg" alt="" loading="lazy" />`
+            : (ILLUSTRATIONS[ex.image_key] || ILLUSTRATIONS['_placeholder']).replace(/viewBox="[^"]*"/, 'viewBox="0 0 120 160"');
+        } else {
+          thumb = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>`;
+        }
+
+        const statusEl = isNoteOnly
+          ? (note ? '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--green)" stroke-width="2.5" stroke-linecap="round"><path d="M20 6L9 17l-5-5"/></svg>' : '')
+          : (allDone ? '<svg class="check-icon" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M20 6L9 17l-5-5"/></svg>'
+              : isSkipped ? '<svg class="skip-icon" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6l-12 12M6 6l12 12"/></svg>'
+              : `<span style="font-size:13px;color:var(--text3)">${completed}/${logs.length}</span>`);
+
+        const meta = isNoteOnly
+          ? (note ? `<div class="exercise-row-meta" style="color:var(--text3);font-style:italic;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:160px">${note}</div>` : '<div class="exercise-row-meta">Tap to add notes</div>')
+          : `<div class="exercise-row-meta">${ex.sets_target}×${ex.reps_target}${ex.weight_range ? ' · ' + startingWeight(ex.weight_range) : ''}</div>`;
+
+        const lastSets = (state.lastLogs[ex.id] || []).filter(s => s.completed);
+        let lastHint = '';
+        if (!isNoteOnly && lastSets.length > 0) {
+          const weight = lastSets.find(s => s.weight_lbs)?.weight_lbs;
+          const reps = lastSets.find(s => s.reps)?.reps;
+          const parts = [`${lastSets.length} sets`];
+          if (reps) parts.push(`${reps} reps`);
+          if (weight) parts.push(`${weight} lbs`);
+          lastHint = `<div class="exercise-row-last">Last: ${parts.join(' · ')}</div>`;
+        }
+
+        html += `<div class="exercise-row ${allDone?'done':''} ${isSkipped?'skipped':''} ${isNoteOnly?'note-only':''}" data-ex-id="${ex.id}">
+          <div class="drag-handle">⠿</div>
+          <div class="exercise-row-thumb">${thumb}</div>
+          <div class="exercise-row-info">
+            <div class="exercise-row-name">${ex.name}</div>
+            ${meta}
+            ${lastHint}
+          </div>
+          <div class="exercise-row-status">${statusEl}</div>
+        </div>`;
+      }
+
+      html += `</div></div>`;
+    }
   }
 
   html += `</div>
@@ -986,6 +1035,83 @@ function renderSetRow(exerciseId, i, rowEl) {
   if (!s || !rowEl) return;
   rowEl.innerHTML = buildSetRow(exerciseId, i, s);
   bindSetRowEvents(rowEl, exerciseId, i);
+}
+
+// ── Superset detail view ──────────────────────────────────────────
+function renderSupersetDetail() {
+  const supersetId = state.detailSupersetId;
+  const exercises = state.sessionExercises.filter(e => e.superset_group === supersetId);
+  if (!exercises.length) return '';
+
+  // Derive display label from section name (e.g. "Superset A")
+  const label = exercises[0].section || 'Superset';
+
+  const exBlocks = exercises.map((ex, idx) => {
+    const logs = state.setLogs[ex.id] || [];
+    const isSkipped = state.skipped.has(ex.id);
+
+    const thumb = IMAGE_KEYS.has(ex.image_key)
+      ? `<img class="ss-ex-thumb-img" src="icons/exercises/${ex.image_key}.jpg" alt="" loading="lazy" />`
+      : (ILLUSTRATIONS[ex.image_key] || ILLUSTRATIONS['_placeholder']).replace(/viewBox="[^"]*"/, 'viewBox="0 0 120 160"');
+
+    // Compact last-session hint
+    const lastSets = (state.lastLogs[ex.id] || []).filter(s => s.completed);
+    let lastHint = '';
+    if (lastSets.length > 0) {
+      const w = lastSets.find(s => s.weight_lbs)?.weight_lbs;
+      const r = lastSets.find(s => s.reps)?.reps;
+      const parts = [];
+      if (w) parts.push(`${w} lbs`);
+      if (r) parts.push(`${r} reps`);
+      lastHint = parts.length
+        ? `<div class="ss-ex-last">Last: ${parts.join(' × ')}</div>`
+        : '';
+    }
+
+    const setTable = !isSkipped ? `
+      <div class="sets-header">
+        <div>Set</div>
+        <div style="text-align:center">Weight <span style="font-size:10px;opacity:.6">(lbs)</span></div>
+        <div style="text-align:center">Reps</div>
+        <div></div>
+      </div>
+      ${logs.map((s, i) => `<div class="set-row" data-ex-id="${ex.id}" data-set-idx="${i}">${buildSetRow(ex.id, i, s)}</div>`).join('')}` : `
+      <div style="text-align:center;padding:12px 0;color:var(--text3);font-size:14px">Skipped</div>`;
+
+    const skipBtn = `<button class="ss-skip-btn" onclick="skipExercise('${ex.id}')">${isSkipped ? 'Unskip' : 'Skip'}</button>`;
+
+    const divider = idx < exercises.length - 1 ? `<div class="ss-divider"></div>` : '';
+
+    return `
+      <div class="ss-ex-block">
+        <div class="ss-ex-header">
+          <div class="ss-ex-thumb">${thumb}</div>
+          <div class="ss-ex-info">
+            <div class="ss-ex-name">${ex.name}</div>
+            <div class="ss-ex-meta">${ex.sets_target}×${ex.reps_target}${ex.weight_range ? ' · ~' + startingWeight(ex.weight_range) : ''}</div>
+            ${lastHint}
+          </div>
+          ${skipBtn}
+        </div>
+        <div class="ss-ex-sets">
+          ${setTable}
+        </div>
+      </div>${divider}`;
+  }).join('');
+
+  return `
+    <div class="page-header">
+      <button class="back-btn" aria-label="Back" onclick="navigateTo('workout')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+      </button>
+      <div class="page-title" style="font-size:18px">${label}</div>
+    </div>
+    <div class="card" style="padding:0;overflow:hidden">
+      ${exBlocks}
+    </div>
+    <div class="btn-row mt8" style="padding:0 16px">
+      <button class="btn btn-secondary" onclick="startRestTimer(${state.restTimer.duration})">Start Rest Timer</button>
+    </div>`;
 }
 
 // ── Summary view ─────────────────────────────────────────────────
@@ -1484,7 +1610,7 @@ function bindViewEvents() {
     });
   });
 
-  // Exercise row click → detail (delegated)
+  // Exercise row click → detail or superset-detail (delegated)
   const sectionSortEl = view.querySelector('#section-sortable');
   if (sectionSortEl) {
     sectionSortEl.addEventListener('click', e => {
@@ -1494,7 +1620,12 @@ function bindViewEvents() {
       const exId = row.dataset.exId;
       const ex = state.sessionExercises.find(ex => ex.id === exId)
              || state.exercises.find(ex => ex.id === exId);
-      if (ex) navigateTo('exercise-detail', { exercise: ex });
+      if (!ex) return;
+      if (ex.superset_group) {
+        navigateTo('superset-detail', { supersetId: ex.superset_group });
+      } else {
+        navigateTo('exercise-detail', { exercise: ex });
+      }
     });
   }
 
