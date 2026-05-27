@@ -234,6 +234,9 @@ function setTab(tab) {
   if (tab === 'history' && navigator.onLine) {
     loadSessions().then(() => { if (state.view === 'history') renderView(); });
   }
+  if (tab === 'progress' && navigator.onLine && state.progressExerciseId) {
+    loadProgress(state.progressExerciseId);
+  }
 }
 
 function navigateTo(view, data = {}) {
@@ -917,9 +920,16 @@ function renderSummary() {
 
 // ── Progress view ─────────────────────────────────────────────────
 function renderProgress() {
+  // Deduplicate by name (exercises can exist twice if both devices seeded independently)
+  const seenNames = new Set();
   const options = state.exercises
     .slice()
     .sort((a,b) => a.name.localeCompare(b.name))
+    .filter(e => {
+      if (seenNames.has(e.name)) return false;
+      seenNames.add(e.name);
+      return true;
+    })
     .map(e => `<option value="${e.id}" ${e.id===state.progressExerciseId?'selected':''}>${e.name}</option>`)
     .join('');
 
