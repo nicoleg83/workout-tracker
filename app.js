@@ -634,6 +634,158 @@ function toggleSuperset(exerciseId) {
   navigateTo('exercise-detail', { exercise: state.sessionExercises.find(e => e.id === exerciseId) });
 }
 
+function nextGroupName() {
+  const existing = new Set(state.sessionExercises.map(e => e.section));
+  let n = 1;
+  while (existing.has(`Group ${n}`)) n++;
+  return `Group ${n}`;
+}
+
+function showSupersetMenu(supersetId, btn) {
+  document.querySelectorAll('.ss-dropdown').forEach(el => el.remove());
+  const menu = document.createElement('div');
+  menu.className = 'ss-dropdown';
+  menu.innerHTML = `
+    <button class="ss-dropdown-item" data-rename-ss="${supersetId}">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+      Rename
+    </button>
+    <button class="ss-dropdown-item danger" data-ungroup-ss="${supersetId}">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6l-12 12M6 6l12 12"/></svg>
+      Ungroup all exercises
+    </button>`;
+  btn.closest('.superset-card-header').appendChild(menu);
+  menu.querySelector('[data-rename-ss]').addEventListener('click', e => {
+    e.stopPropagation();
+    startRenameSuperset(supersetId);
+  });
+  menu.querySelector('[data-ungroup-ss]').addEventListener('click', e => {
+    e.stopPropagation();
+    ungroupSuperset(supersetId);
+  });
+  const close = e => {
+    if (!menu.contains(e.target) && e.target !== btn) {
+      menu.remove();
+      document.removeEventListener('click', close);
+    }
+  };
+  setTimeout(() => document.addEventListener('click', close), 0);
+}
+
+function startRenameSuperset(supersetId) {
+  document.querySelectorAll('.ss-dropdown').forEach(el => el.remove());
+  const card = document.querySelector(`.superset-card[data-superset-id="${CSS.escape(supersetId)}"]`);
+  if (!card) return;
+  const labelEl = card.querySelector('.superset-card-label');
+  if (!labelEl) return;
+  const currentName = labelEl.textContent.trim();
+  const wrap = document.createElement('div');
+  wrap.className = 'ss-rename-wrap';
+  wrap.innerHTML = `<input class="ss-rename-input" value="${currentName}" /><button class="ss-rename-confirm">✓</button>`;
+  labelEl.replaceWith(wrap);
+  const input = wrap.querySelector('.ss-rename-input');
+  input.focus();
+  input.select();
+  let saved = false;
+  const save = () => {
+    if (saved) return;
+    saved = true;
+    renameSuperset(supersetId, input.value.trim() || currentName);
+  };
+  input.addEventListener('blur', save);
+  wrap.querySelector('.ss-rename-confirm').addEventListener('click', save);
+}
+
+function renameSuperset(supersetId, newName) {
+  state.sessionExercises.forEach(ex => {
+    if (ex.superset_group === supersetId) ex.section = newName;
+  });
+  renderView();
+}
+
+function ungroupSuperset(supersetId) {
+  document.querySelectorAll('.ss-dropdown').forEach(el => el.remove());
+  state.sessionExercises.forEach(ex => {
+    if (ex.superset_group === supersetId) ex.superset_group = null;
+  });
+  renderView();
+}
+
+function showGroupPicker(exId) {
+  const ex = state.sessionExercises.find(e => e.id === exId);
+  if (!ex) return;
+  const groups = new Map();
+  state.sessionExercises.forEach(e => {
+    if (e.superset_group) {
+      if (!groups.has(e.superset_group)) groups.set(e.superset_group, { label: e.section, names: [] });
+      groups.get(e.superset_group).names.push(e.name);
+    }
+  });
+  const existingOpts = [...groups.entries()].map(([id, { label, names }]) => `
+    <button class="group-sheet-option" data-add-to="${id}">
+      <div>
+        <span class="group-sheet-label">${label}</span>
+        <span class="group-sheet-meta">${names.join(', ')}</span>
+      </div>
+    </button>`).join('');
+  const sheet = document.createElement('div');
+  sheet.id = 'group-picker-sheet';
+  sheet.innerHTML = `
+    <div class="group-picker-backdrop"></div>
+    <div class="group-picker-panel">
+      <div class="group-picker-handle"></div>
+      <div class="group-picker-title">Group with another exercise</div>
+      <button class="group-sheet-option group-sheet-create" id="gp-create">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--pink)" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        <div>
+          <span class="group-sheet-label">Create new group</span>
+          <span class="group-sheet-meta">Pairs with the next exercise in the list</span>
+        </div>
+      </button>
+      ${existingOpts ? `<div class="group-picker-section-label">Add to existing group</div>${existingOpts}` : ''}
+      <button class="group-picker-cancel">Cancel</button>
+    </div>`;
+  document.body.appendChild(sheet);
+  requestAnimationFrame(() => sheet.querySelector('.group-picker-panel').classList.add('open'));
+  sheet.querySelector('.group-picker-backdrop').addEventListener('click', closeGroupPicker);
+  sheet.querySelector('.group-picker-cancel').addEventListener('click', closeGroupPicker);
+  sheet.querySelector('#gp-create').addEventListener('click', () => { closeGroupPicker(); createNewGroup(exId); });
+  sheet.querySelectorAll('[data-add-to]').forEach(btn => {
+    btn.addEventListener('click', () => { closeGroupPicker(); addExerciseToGroup(exId, btn.dataset.addTo); });
+  });
+}
+
+function closeGroupPicker() {
+  const sheet = document.getElementById('group-picker-sheet');
+  if (!sheet) return;
+  sheet.querySelector('.group-picker-panel').classList.remove('open');
+  setTimeout(() => sheet.remove(), 260);
+}
+
+function createNewGroup(exId) {
+  const ex = state.sessionExercises.find(e => e.id === exId);
+  if (!ex) return;
+  const idx = state.sessionExercises.indexOf(ex);
+  const next = state.sessionExercises[idx + 1];
+  if (!next) { toast('No next exercise to pair with'); return; }
+  const groupId = `superset-custom-${Date.now()}`;
+  const groupName = nextGroupName();
+  ex.superset_group = groupId;
+  ex.section = groupName;
+  next.superset_group = groupId;
+  next.section = groupName;
+  renderView();
+}
+
+function addExerciseToGroup(exId, supersetId) {
+  const ex = state.sessionExercises.find(e => e.id === exId);
+  const ref = state.sessionExercises.find(e => e.superset_group === supersetId);
+  if (!ex || !ref) return;
+  ex.superset_group = supersetId;
+  ex.section = ref.section;
+  renderView();
+}
+
 function saveExerciseNote(exerciseId, note) {
   state.exerciseNotes[exerciseId] = note;
 }
@@ -788,7 +940,10 @@ function renderWorkout() {
               <span class="section-drag-handle">⠿</span>
               <span class="superset-card-label">${displaySection}</span>
             </div>
-            <span class="superset-card-progress">${totalDone}/${totalSets} sets</span>
+            <div style="display:flex;align-items:center;gap:6px">
+              <span class="superset-card-progress">${totalDone}/${totalSets} sets</span>
+              <button class="ss-menu-btn" data-ss-menu="${supersetId}">⋮</button>
+            </div>
           </div>
           <div class="exercise-sortable-inner">`;
 
@@ -864,6 +1019,9 @@ function renderWorkout() {
           lastHint = `<div class="exercise-row-last">Last: ${parts.join(' · ')}</div>`;
         }
 
+        const groupBtn = !isNoteOnly && state.activeSession
+          ? `<button class="ex-group-btn" data-group-ex="${ex.id}" aria-label="Group"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg></button>`
+          : '';
         html += `<div class="exercise-row ${allDone?'done':''} ${isSkipped?'skipped':''} ${isNoteOnly?'note-only':''}" data-ex-id="${ex.id}">
           <div class="drag-handle">⠿</div>
           <div class="exercise-row-thumb">${thumb}</div>
@@ -872,7 +1030,10 @@ function renderWorkout() {
             ${meta}
             ${lastHint}
           </div>
-          <div class="exercise-row-status">${statusEl}</div>
+          <div class="exercise-row-end">
+            <div class="exercise-row-status">${statusEl}</div>
+            ${groupBtn}
+          </div>
         </div>`;
       }
 
@@ -1615,6 +1776,7 @@ function bindViewEvents() {
   if (sectionSortEl) {
     sectionSortEl.addEventListener('click', e => {
       if (e.target.closest('.drag-handle') || e.target.closest('.section-drag-handle')) return;
+      if (e.target.closest('.ex-group-btn') || e.target.closest('.ss-menu-btn')) return;
       const row = e.target.closest('.exercise-row[data-ex-id]');
       if (!row) return;
       const exId = row.dataset.exId;
@@ -1721,6 +1883,22 @@ function bindViewEvents() {
     btn.addEventListener('click', () => {
       state.progressRange = btn.dataset.progRange;
       renderView();
+    });
+  });
+
+  // ⋮ menu on superset card headers
+  view.querySelectorAll('.ss-menu-btn[data-ss-menu]').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      showSupersetMenu(btn.dataset.ssMenu, btn);
+    });
+  });
+
+  // Chain icon → group picker bottom sheet
+  view.querySelectorAll('.ex-group-btn[data-group-ex]').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      showGroupPicker(btn.dataset.groupEx);
     });
   });
 
