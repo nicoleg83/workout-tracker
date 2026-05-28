@@ -1079,7 +1079,7 @@ function renderWorkout() {
         const allDone = ex.sets_target > 0 && completed === logs.length && logs.length > 0;
         const isSkipped = state.skipped.has(ex.id);
         const thumb = IMAGE_KEYS.has(ex.image_key)
-          ? `<img class="superset-card-thumb-img" src="icons/exercises/${ex.image_key}.jpg" alt="" loading="lazy" />`
+          ? `<img class="superset-card-thumb-img" src="icons/exercises/${ex.image_key}.png" alt="" loading="lazy" />`
           : (ILLUSTRATIONS[ex.image_key] || ILLUSTRATIONS['_placeholder']).replace(/viewBox="[^"]*"/, 'viewBox="0 0 120 160"');
         const statusEl = allDone
           ? `<svg class="check-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M20 6L9 17l-5-5"/></svg>`
@@ -1119,7 +1119,7 @@ function renderWorkout() {
         let thumb = '';
         if (!isNoteOnly) {
           thumb = IMAGE_KEYS.has(ex.image_key)
-            ? `<img class="exercise-thumb-img" src="icons/exercises/${ex.image_key}.jpg" alt="" loading="lazy" />`
+            ? `<img class="exercise-thumb-img" src="icons/exercises/${ex.image_key}.png" alt="" loading="lazy" />`
             : (ILLUSTRATIONS[ex.image_key] || ILLUSTRATIONS['_placeholder']).replace(/viewBox="[^"]*"/, 'viewBox="0 0 120 160"');
         } else {
           thumb = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>`;
@@ -1285,9 +1285,13 @@ function renderExerciseDetail() {
     ? `<div style="font-size:11px;color:var(--pink);margin-top:2px;cursor:pointer;-webkit-tap-highlight-color:transparent" onclick="navigateTo('superset-detail',{supersetId:'${ex.superset_group}'})">↑ ${supersetLabel}</div>`
     : '';
 
+  const backDest = inSuperset
+    ? `navigateTo('superset-detail',{supersetId:'${ex.superset_group}'})`
+    : `navigateTo('workout')`;
+
   return `
     <div class="page-header">
-      <button class="back-btn" aria-label="Back" onclick="navigateTo('workout')">
+      <button class="back-btn" aria-label="Back" onclick="${backDest}">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
       </button>
       <div style="flex:1">
@@ -1351,7 +1355,7 @@ function renderSupersetDetail() {
     const isSkipped = state.skipped.has(ex.id);
 
     const thumb = IMAGE_KEYS.has(ex.image_key)
-      ? `<img class="ss-ex-thumb-img" src="icons/exercises/${ex.image_key}.jpg" alt="" loading="lazy" />`
+      ? `<img class="ss-ex-thumb-img" src="icons/exercises/${ex.image_key}.png" alt="" loading="lazy" />`
       : (ILLUSTRATIONS[ex.image_key] || ILLUSTRATIONS['_placeholder']).replace(/viewBox="[^"]*"/, 'viewBox="0 0 120 160"');
 
     // Full last-session card (mirrors exercise-detail)
@@ -1408,10 +1412,13 @@ function renderSupersetDetail() {
     return `
       <div class="ss-ex-block">
         <div class="ss-ex-header">
-          <div class="ss-ex-thumb">${thumb}</div>
-          <div class="ss-ex-info">
-            <div class="ss-ex-name">${ex.name}</div>
-            <div class="ss-ex-meta">${ex.sets_target}×${ex.reps_target}${ex.weight_range ? ' · ~' + startingWeight(ex.weight_range) : ''}</div>
+          <div class="ss-ex-thumb-wrap" data-ss-drill-ex="${ex.id}" style="display:flex;align-items:center;gap:10px;flex:1;min-width:0;cursor:pointer;-webkit-tap-highlight-color:transparent">
+            <div class="ss-ex-thumb">${thumb}</div>
+            <div class="ss-ex-info">
+              <div class="ss-ex-name">${ex.name}</div>
+              <div class="ss-ex-meta">${ex.sets_target}×${ex.reps_target}${ex.weight_range ? ' · ~' + startingWeight(ex.weight_range) : ''}</div>
+              <div class="ss-ex-drill-hint">Details ›</div>
+            </div>
           </div>
           ${skipBtn}
         </div>
@@ -1729,7 +1736,7 @@ function renderProgress() {
       }
 
       const thumb = IMAGE_KEYS.has(ex.image_key)
-        ? `<img class="prog-thumb-img" src="icons/exercises/${ex.image_key}.jpg" alt="" loading="lazy">`
+        ? `<img class="prog-thumb-img" src="icons/exercises/${ex.image_key}.png" alt="" loading="lazy">`
         : `<div class="prog-thumb-icon">💪</div>`;
 
       const isPR = pr && last && pr.date === last.date;
@@ -2023,6 +2030,15 @@ function bindViewEvents() {
       navigateTo('exercise-detail', { exercise: ex });
     });
   }
+
+  // Superset detail: drill into individual exercise
+  view.querySelectorAll('[data-ss-drill-ex]').forEach(el => {
+    el.addEventListener('click', () => {
+      const exId = el.dataset.ssDrillEx;
+      const ex = state.sessionExercises.find(e => e.id === exId);
+      if (ex) navigateTo('exercise-detail', { exercise: ex });
+    });
+  });
 
   // Set input events — fire on every keystroke so tapping Complete right after typing works
   view.querySelectorAll('.set-input[data-ex-id]').forEach(input => {

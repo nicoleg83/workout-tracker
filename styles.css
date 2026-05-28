@@ -1037,6 +1037,7 @@ body {
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .ss-ex-meta { font-size: 13px; color: var(--text2); margin-top: 3px; }
+.ss-ex-drill-hint { font-size: 11px; color: var(--pink); margin-top: 4px; }
 .ss-ex-last { font-size: 12px; color: var(--text3); margin-top: 3px; }
 .ss-ex-sets { margin-top: 4px; }
 .ss-skip-btn {
