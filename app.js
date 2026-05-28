@@ -400,10 +400,11 @@ async function startSession(day) {
 
 // Snapshot the current session's exercise order, notes, and skipped state
 // into session.notes (JSON) so history can show the full picture.
-async function saveSessionMeta() {
+async function saveSessionMeta(finished = false) {
   if (!state.activeSession) return;
   const meta = {
     v: 1,
+    finished,
     exercises: state.sessionExercises.map(ex => ({
       id: ex.id,
       name: ex.name,
@@ -429,23 +430,42 @@ async function finishSession() {
   ).length;
   const totalSets = counted.flatMap(ex => state.setLogs[ex.id] || []).length;
 
-  localStorage.removeItem('activeWorkoutSessionId');
-  await saveSessionMeta();
+  // Mark as finished so it appears in history; localStorage cleared in completeAndGoHome
+  await saveSessionMeta(true);
   state.view = 'summary';
   state.summaryData = { completedSets, totalSets, exercises };
   renderView();
 }
 
-async function endAndGoHome() {
+// Called from summary Done button — session already finished and saved
+async function completeAndGoHome() {
   localStorage.removeItem('activeWorkoutSessionId');
-  // Auto-discard sessions where nothing was logged
+  state.activeSession = null;
+  state.setLogs = {};
+  state.skipped = new Set();
+  state.activeDay = null;
+  state.sessionExercises = [];
+  state.defaultExerciseIds = [];
+  state.exerciseNotes = {};
+  state.progressLoaded = false;
+  state.sessionPRCount = 0;
+  stopRestTimer();
+  await loadSessions();
+  setTab('home');
+}
+
+async function endAndGoHome() {
   if (state.activeSession) {
     const hasLogs = state.sessionExercises.some(ex =>
       (state.setLogs[ex.id] || []).some(s => s.completed)
     );
     if (hasLogs) {
-      await saveSessionMeta();
+      // Keep session alive for resume — save meta but do NOT mark finished,
+      // and do NOT remove activeWorkoutSessionId from localStorage
+      await saveSessionMeta(false);
     } else {
+      // Truly empty — delete entirely
+      localStorage.removeItem('activeWorkoutSessionId');
       const logs = await DB.getAll('set_logs', 'session_id', state.activeSession.id);
       for (const log of logs) await DB.del('set_logs', log.id);
       await DB.del('sessions', state.activeSession.id);
@@ -974,7 +994,7 @@ function renderHome() {
   ];
   const dayNameMap = Object.fromEntries(days.map(d => [d.day, d.name]));
 
-  const last = state.sessions[0];
+  const last = state.sessions.find(isSessionFinished);
   const lastWidget = last ? `
     <div class="last-workout-widget">
       <div class="last-workout-dot">
@@ -1484,7 +1504,7 @@ function renderSummary() {
       <div style="font-size:13px;color:var(--text2);margin-top:4px">${fmtDate(state.activeSession?.date || today())}</div>
     </div>
     <div style="margin-top:20px;">
-      <button class="btn btn-primary" onclick="endAndGoHome()">Done</button>
+      <button class="btn btn-primary" onclick="completeAndGoHome()">Done</button>
     </div>`;
 }
 
@@ -1943,9 +1963,21 @@ function renderProgressExercise() {
     ${histRows || `<div class="empty"><div class="empty-icon">📋</div><div class="empty-body">No sessions yet.</div></div>`}`;
 }
 
+// Returns true if a session should appear in history.
+// Sessions saved for resume (finished: false) are excluded.
+// Old sessions with no finished field show by default (backward compat).
+function isSessionFinished(s) {
+  if (!s.notes) return true;
+  try {
+    const meta = JSON.parse(s.notes);
+    return meta.finished !== false;
+  } catch (_) { return true; }
+}
+
 // ── History view ──────────────────────────────────────────────────
 function renderHistory() {
-  if (!state.sessions.length) {
+  const finished = state.sessions.filter(isSessionFinished);
+  if (!finished.length) {
     return `
       <div class="page-header"><div class="page-title">History</div></div>
       <div class="empty">
@@ -1956,7 +1988,7 @@ function renderHistory() {
   }
 
   const dayNames = { 'Day 1': 'Push', 'Day 2': 'Pull', 'Day 3': 'Legs' };
-  const cards = state.sessions.map(s => `
+  const cards = finished.map(s => `
     <div class="session-card" data-session-id="${s.id}">
       <div class="session-card-header">
         <div>
