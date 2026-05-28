@@ -1083,7 +1083,7 @@ function renderWorkout() {
         const allDone = ex.sets_target > 0 && completed === logs.length && logs.length > 0;
         const isSkipped = state.skipped.has(ex.id);
         const thumb = IMAGE_KEYS.has(ex.image_key)
-          ? `<img class="superset-card-thumb-img" src="icons/exercises/${ex.image_key}.png" alt="" loading="lazy" />`
+          ? `<img class="superset-card-thumb-img" src="icons/exercises/${ex.image_key}.webp" alt="" loading="lazy" />`
           : (ILLUSTRATIONS[ex.image_key] || ILLUSTRATIONS['_placeholder']).replace(/viewBox="[^"]*"/, 'viewBox="0 0 120 160"');
         const statusEl = allDone
           ? `<svg class="check-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M20 6L9 17l-5-5"/></svg>`
@@ -1123,7 +1123,7 @@ function renderWorkout() {
         let thumb = '';
         if (!isNoteOnly) {
           thumb = IMAGE_KEYS.has(ex.image_key)
-            ? `<img class="exercise-thumb-img" src="icons/exercises/${ex.image_key}.png" alt="" loading="lazy" />`
+            ? `<img class="exercise-thumb-img" src="icons/exercises/${ex.image_key}.webp" alt="" loading="lazy" />`
             : (ILLUSTRATIONS[ex.image_key] || ILLUSTRATIONS['_placeholder']).replace(/viewBox="[^"]*"/, 'viewBox="0 0 120 160"');
         } else {
           thumb = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>`;
@@ -1359,7 +1359,7 @@ function renderSupersetDetail() {
     const isSkipped = state.skipped.has(ex.id);
 
     const thumb = IMAGE_KEYS.has(ex.image_key)
-      ? `<img class="ss-ex-thumb-img" src="icons/exercises/${ex.image_key}.png" alt="" loading="lazy" />`
+      ? `<img class="ss-ex-thumb-img" src="icons/exercises/${ex.image_key}.webp" alt="" loading="lazy" />`
       : (ILLUSTRATIONS[ex.image_key] || ILLUSTRATIONS['_placeholder']).replace(/viewBox="[^"]*"/, 'viewBox="0 0 120 160"');
 
     // Full last-session card (mirrors exercise-detail)
@@ -1741,7 +1741,7 @@ function renderProgress() {
       }
 
       const thumb = IMAGE_KEYS.has(ex.image_key)
-        ? `<img class="prog-thumb-img" src="icons/exercises/${ex.image_key}.png" alt="" loading="lazy">`
+        ? `<img class="prog-thumb-img" src="icons/exercises/${ex.image_key}.webp" alt="" loading="lazy">`
         : `<div class="prog-thumb-icon">💪</div>`;
 
       const isPR = pr && last && pr.date === last.date;
@@ -1926,7 +1926,7 @@ function renderProgressExercise() {
   }).join('');
 
   const mediaHtml = ex.image_key
-    ? `<div class="exercise-media-wrap" style="margin-bottom:16px"><img class="exercise-media-img" src="icons/exercises/${ex.image_key}.png" alt="" loading="lazy"></div>`
+    ? `<div class="exercise-media-wrap" style="margin-bottom:16px"><img class="exercise-media-img" src="icons/exercises/${ex.image_key}.webp" alt="" loading="lazy"></div>`
     : '';
 
   return `

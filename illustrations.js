@@ -27,7 +27,7 @@ const IMAGE_KEYS = new Set([
 
 function getExerciseMedia(imageKey) {
   if (IMAGE_KEYS.has(imageKey)) {
-    return `<div class="exercise-media-wrap"><img class="exercise-media-img" src="icons/exercises/${imageKey}.png" alt="" loading="lazy" /></div>`;
+    return `<div class="exercise-media-wrap"><img class="exercise-media-img" src="icons/exercises/${imageKey}.webp" alt="" loading="lazy" /></div>`;
   }
   const svg = ILLUSTRATIONS[imageKey] || ILLUSTRATIONS['_placeholder'];
   return `<div class="exercise-media-wrap exercise-media-svg">${svg}</div>`;
