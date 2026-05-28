@@ -2471,8 +2471,8 @@ async function init() {
   await loadExercises(); // Must run before syncIfOnline so exercises exist in Supabase for local-* remap
   await syncIfOnline();
   await loadSessions();
-  await pruneEmptySessions();
   await loadProgressData();
+  await pruneEmptySessions();
   await tryResumeSession();
 
   document.querySelectorAll('.tab-btn').forEach(btn => {
