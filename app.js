@@ -2430,11 +2430,18 @@ async function tryResumeSession() {
 }
 
 // ── Prune empty sessions ──────────────────────────────────────────
+// Safety rules: only delete if ALL of these hold:
+//   1. Not the currently active session
+//   2. Session is older than 24h (gives other devices time to sync their logs)
+//   3. Zero logs in local IndexedDB (which has already fetched from Supabase in loadProgressData)
 async function pruneEmptySessions() {
   const activeId = localStorage.getItem('activeWorkoutSessionId');
+  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
   const toDelete = [];
   for (const s of state.sessions) {
     if (s.id === activeId) continue;
+    const createdAt = new Date(s.created_at || s.date).getTime();
+    if (createdAt > cutoff) continue; // too recent — may still be syncing
     const logs = await DB.getAll('set_logs', 'session_id', s.id);
     if (logs.length === 0) toDelete.push(s);
   }
@@ -2445,6 +2452,30 @@ async function pruneEmptySessions() {
   if (toDelete.length > 0) {
     state.sessions = state.sessions.filter(s => !toDelete.find(d => d.id === s.id));
   }
+}
+
+// ── Daily auto-backup ─────────────────────────────────────────────
+async function maybeAutoBackup() {
+  const lastBackup = localStorage.getItem('lastAutoBackup');
+  if (lastBackup === today()) return; // already backed up today
+
+  try {
+    const allLogs = await DB.getAll('set_logs');
+    const backup = {
+      exported_at: new Date().toISOString(),
+      user_email: state.user?.email || '',
+      sessions: state.sessions,
+      set_logs: allLogs,
+    };
+    const blob = new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `workout-backup-${today()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    localStorage.setItem('lastAutoBackup', today());
+  } catch (_) {}
 }
 
 // ── Init ──────────────────────────────────────────────────────────
@@ -2473,6 +2504,7 @@ async function init() {
   await loadSessions();
   await loadProgressData();
   await pruneEmptySessions();
+  await maybeAutoBackup();
   await tryResumeSession();
 
   document.querySelectorAll('.tab-btn').forEach(btn => {
