@@ -1925,6 +1925,10 @@ function renderProgressExercise() {
       </div>`;
   }).join('');
 
+  const mediaHtml = ex.image_key
+    ? `<div class="exercise-media-wrap" style="margin-bottom:16px"><img class="exercise-media-img" src="icons/exercises/${ex.image_key}.png" alt="" loading="lazy"></div>`
+    : '';
+
   return `
     <div class="page-header">
       <button class="back-btn" aria-label="Back" onclick="navigateTo('progress')">
@@ -1932,6 +1936,7 @@ function renderProgressExercise() {
       </button>
       <div class="page-title" style="font-size:18px">${ex.name}</div>
     </div>
+    ${mediaHtml}
     ${prBar}
     ${chartHtml}
     <div class="section-label" style="margin-top:16px">Session history</div>
@@ -2424,6 +2429,24 @@ async function tryResumeSession() {
   state.tab = 'workout';
 }
 
+// ── Prune empty sessions ──────────────────────────────────────────
+async function pruneEmptySessions() {
+  const activeId = localStorage.getItem('activeWorkoutSessionId');
+  const toDelete = [];
+  for (const s of state.sessions) {
+    if (s.id === activeId) continue;
+    const logs = await DB.getAll('set_logs', 'session_id', s.id);
+    if (logs.length === 0) toDelete.push(s);
+  }
+  for (const s of toDelete) {
+    await DB.del('sessions', s.id);
+    try { await Supabase.deleteRecord('sessions', s.id); } catch (_) {}
+  }
+  if (toDelete.length > 0) {
+    state.sessions = state.sessions.filter(s => !toDelete.find(d => d.id === s.id));
+  }
+}
+
 // ── Init ──────────────────────────────────────────────────────────
 async function init() {
   if ('serviceWorker' in navigator) {
@@ -2448,6 +2471,7 @@ async function init() {
   await loadExercises(); // Must run before syncIfOnline so exercises exist in Supabase for local-* remap
   await syncIfOnline();
   await loadSessions();
+  await pruneEmptySessions();
   await loadProgressData();
   await tryResumeSession();
 
