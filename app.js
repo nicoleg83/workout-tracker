@@ -380,6 +380,7 @@ async function startSession(day) {
   };
   state.activeSession = session;
   state.activeDay = day;
+  localStorage.setItem('activeWorkoutSessionId', session.id);
 
   state.sessionExercises = [
     makeWarmup(day, session.id),
@@ -428,6 +429,7 @@ async function finishSession() {
   ).length;
   const totalSets = counted.flatMap(ex => state.setLogs[ex.id] || []).length;
 
+  localStorage.removeItem('activeWorkoutSessionId');
   await saveSessionMeta();
   state.view = 'summary';
   state.summaryData = { completedSets, totalSets, exercises };
@@ -435,6 +437,7 @@ async function finishSession() {
 }
 
 async function endAndGoHome() {
+  localStorage.removeItem('activeWorkoutSessionId');
   // Auto-discard sessions where nothing was logged
   if (state.activeSession) {
     const hasLogs = state.sessionExercises.some(ex =>
@@ -465,6 +468,7 @@ async function endAndGoHome() {
 
 async function cancelSession() {
   if (!confirm('Cancel this workout? All logged progress will be lost.')) return;
+  localStorage.removeItem('activeWorkoutSessionId');
   if (state.activeSession) {
     const logs = await DB.getAll('set_logs', 'session_id', state.activeSession.id);
     for (const log of logs) await DB.del('set_logs', log.id);
@@ -1524,6 +1528,7 @@ async function deleteSession(sessionId) {
   state.sessions = state.sessions.filter(s => s.id !== sessionId);
   state.historySession = null;
   state.historyLogs = [];
+  await loadProgressData();
   toast('Workout deleted');
   setTab('history');
 }
@@ -2343,6 +2348,82 @@ async function finishAuth(session) {
   renderRestTimer();
 }
 
+// ── Resume workout after app exit ────────────────────────────────
+async function tryResumeSession() {
+  const savedId = localStorage.getItem('activeWorkoutSessionId');
+  if (!savedId) return;
+
+  const session = state.sessions.find(s => s.id === savedId);
+  if (!session) {
+    localStorage.removeItem('activeWorkoutSessionId');
+    return;
+  }
+
+  // Reconstruct session exercises from saved notes
+  let sessionExercises = [];
+  const meta = (() => { try { return JSON.parse(session.notes || ''); } catch (_) { return null; } })();
+
+  if (meta?.v === 1 && Array.isArray(meta.exercises)) {
+    sessionExercises = meta.exercises.map(saved => {
+      const base = state.exercises.find(e => e.id === saved.id);
+      return base
+        ? { ...base, section: saved.section || base.section, _note: saved.note }
+        : {
+            id: saved.id, name: saved.name, section: saved.section,
+            sets_target: saved.sets_target, reps_target: saved.reps_target,
+            weight_range: '', equipment: '', instructions: [],
+            image_key: null, superset_group: null, sort_order: 0, _custom: true,
+          };
+    });
+  } else {
+    // Fallback: rebuild default exercise list for the day
+    sessionExercises = [
+      makeWarmup(session.day, session.id),
+      ...state.exercises.filter(e => e.day === session.day).sort((a, b) => a.sort_order - b.sort_order).map(e => ({ ...e })),
+      makeAbs(session.day, session.id),
+    ];
+  }
+
+  // Restore set logs from IndexedDB
+  const logs = await DB.getAll('set_logs', 'session_id', session.id);
+  const setLogs = {};
+  for (const ex of sessionExercises) {
+    if (!ex.sets_target) { setLogs[ex.id] = []; continue; }
+    const exLogs = logs.filter(l => l.exercise_id === ex.id);
+    const rows = [];
+    for (let i = 0; i < ex.sets_target; i++) {
+      const saved = exLogs.find(l => l.set_number === i + 1);
+      rows.push({
+        setNumber: i + 1,
+        weight_lbs: saved ? saved.weight_lbs : null,
+        reps: saved ? saved.reps : null,
+        completed: saved ? saved.completed : false,
+        is_pr: saved ? saved.is_pr : false,
+        _logId: saved ? saved.id : null,
+      });
+    }
+    setLogs[ex.id] = rows;
+  }
+
+  // Restore notes per exercise
+  const exerciseNotes = {};
+  if (meta?.exercises) {
+    for (const e of meta.exercises) {
+      if (e.note) exerciseNotes[e.id] = e.note;
+    }
+  }
+
+  state.activeSession = session;
+  state.activeDay = session.day;
+  state.sessionExercises = sessionExercises;
+  state.defaultExerciseIds = sessionExercises.map(e => e.id);
+  state.setLogs = setLogs;
+  state.skipped = new Set(meta?.skipped || []);
+  state.exerciseNotes = exerciseNotes;
+  state.view = 'workout';
+  state.tab = 'workout';
+}
+
 // ── Init ──────────────────────────────────────────────────────────
 async function init() {
   if ('serviceWorker' in navigator) {
@@ -2368,6 +2449,7 @@ async function init() {
   await syncIfOnline();
   await loadSessions();
   await loadProgressData();
+  await tryResumeSession();
 
   document.querySelectorAll('.tab-btn').forEach(btn => {
     btn.addEventListener('click', () => setTab(btn.dataset.tab));
