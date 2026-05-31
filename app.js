@@ -307,6 +307,7 @@ function checkPR(exerciseId, weight, reps) {
     state.sessionPRCount = (state.sessionPRCount || 0) + 1;
     state.progressLoaded = false;
     toast(`New PR — ${name} 🏆`, 'success');
+    haptic([10, 60, 20]);
   }
 }
 
@@ -1958,8 +1959,9 @@ function buildProgressChart(history, pr, range) {
           </linearGradient>
         </defs>
         ${yAxisHtml}${gridLines}${prLine}
-        ${history.length > 1 ? `<polyline points="${polyPoints}" fill="none" stroke="#E91E8C" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round" opacity="0.7"/>` : ''}
-        ${history.length > 1 ? `<polygon points="${fillPoints}" fill="url(#prog-grad)" opacity="0.12"/>` : ''}
+        ${history.length > 1 ? `<path d="${areaPath}" fill="url(#prog-grad)" opacity="0.12" stroke="none"/>` : ''}
+        ${trendLine}
+        ${history.length > 1 ? `<path d="${linePath}" fill="none" stroke="#E91E8C" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round" opacity="0.7"/>` : ''}
         ${dots}${xLabels}
       </svg>
     </div>`;
@@ -2454,7 +2456,7 @@ async function finishAuth(session) {
   await loadSessions();
   await loadProgressData();
   document.querySelectorAll('.tab-btn').forEach(btn => {
-    btn.addEventListener('click', () => setTab(btn.dataset.tab));
+    btn.addEventListener('click', () => { haptic(5); setTab(btn.dataset.tab); });
   });
   window.addEventListener('online', () => { updateSyncDot(); syncIfOnline(); });
   window.addEventListener('offline', () => updateSyncDot());
@@ -2617,7 +2619,7 @@ async function init() {
   await tryResumeSession();
 
   document.querySelectorAll('.tab-btn').forEach(btn => {
-    btn.addEventListener('click', () => setTab(btn.dataset.tab));
+    btn.addEventListener('click', () => { haptic(5); setTab(btn.dataset.tab); });
   });
   window.addEventListener('online', () => { updateSyncDot(); syncIfOnline(); });
   window.addEventListener('offline', () => updateSyncDot());
