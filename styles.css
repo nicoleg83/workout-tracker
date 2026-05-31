@@ -766,29 +766,6 @@ body {
   #main-view.view-anim-tab { animation: none; }
 }
 
-/* ── Home screen 7-day workout frequency dots ─────────────────── */
-.streak-dots-row {
-  display: flex;
-  gap: 8px;
-  justify-content: center;
-  align-items: center;
-  padding: 14px 0 2px;
-  margin-bottom: 12px;
-}
-.streak-dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: var(--bg3);
-}
-.streak-dot.filled {
-  background: var(--pink);
-  box-shadow: 0 0 6px rgba(233, 30, 140, 0.45);
-}
-.streak-dot.today {
-  outline: 2px solid var(--pink);
-  outline-offset: 2px;
-}
 .pink { color: var(--pink); }
 .muted { color: var(--text2); }
 .bold { font-weight: 700; }

@@ -41,6 +41,17 @@ function today() {
 function haptic(pattern = 10) {
   try { navigator.vibrate?.(pattern); } catch (_) {}
 }
+// Resolve an exercise's muscles. Runtime rows loaded from Supabase predate the
+// muscles field, so fall back to the bundled EXERCISES constant by image_key.
+function exerciseMuscles(ex) {
+  if (!ex) return null;
+  if (ex.muscles) return ex.muscles;
+  if (ex.image_key && typeof EXERCISES !== 'undefined') {
+    const match = EXERCISES.find(e => e.image_key === ex.image_key);
+    if (match && match.muscles) return match.muscles;
+  }
+  return null;
+}
 function fmtDate(d) {
   return new Date(d + 'T00:00:00').toLocaleDateString('en-US', { weekday:'short', month:'short', day:'numeric' });
 }
@@ -1045,24 +1056,6 @@ function renderHome() {
   }).join('');
 
   const userEmail = state.user?.email || '';
-
-  // 7-day workout frequency dots (today rightmost). Only shown once a finished session exists.
-  let streakDots = '';
-  if (state.sessions.some(isSessionFinished)) {
-    const doneDates = new Set(state.sessions.filter(isSessionFinished).map(s => s.date));
-    const anchor = new Date(today() + 'T00:00:00');
-    const dotEls = [];
-    for (let i = 6; i >= 0; i--) {
-      const d = new Date(anchor);
-      d.setDate(anchor.getDate() - i);
-      const ds = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-      const filled = doneDates.has(ds) ? ' filled' : '';
-      const isToday = i === 0 ? ' today' : '';
-      const label = d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) + (i === 0 ? ' (today)' : '');
-      dotEls.push(`<div class="streak-dot${filled}${isToday}" title="${label}"></div>`);
-    }
-    streakDots = `<div class="streak-dots-row">${dotEls.join('')}</div>`;
-  }
   return `
     <div class="page-header">
       <div style="flex:1">
@@ -1077,7 +1070,6 @@ function renderHome() {
     </div>
     ${inProgress}
     ${lastWidget}
-    ${streakDots}
     <div class="day-cards">${cards}</div>`;
 }
 
@@ -1267,11 +1259,13 @@ function renderExerciseDetail() {
   let mediaEl = '';
   if (!isNoteOnly && ex.image_key) mediaEl = getExerciseMedia(ex.image_key);
 
-  // Muscle chips
-  const muscleChips = ex.muscles
+  // Muscle chips — resolve from the EXERCISES constant by image_key when the
+  // runtime row lacks muscles (Supabase rows predate the muscles field).
+  const _m = exerciseMuscles(ex);
+  const muscleChips = _m
     ? [
-        ...(ex.muscles.primary || []).map(m => `<span class="tag tag-muscle-primary">${m}</span>`),
-        ...(ex.muscles.secondary || []).map(m => `<span class="tag tag-muscle-secondary">${m}</span>`),
+        ...(_m.primary || []).map(m => `<span class="tag tag-muscle-primary">${m}</span>`),
+        ...(_m.secondary || []).map(m => `<span class="tag tag-muscle-secondary">${m}</span>`),
       ].join('')
     : '';
 
@@ -2020,10 +2014,11 @@ function renderProgressExercise() {
     ? `<div class="exercise-media-wrap" style="margin-bottom:16px"><img class="exercise-media-img" src="icons/exercises/${ex.image_key}.webp" alt="" loading="lazy"></div>`
     : '';
 
-  const muscleChipsHtml = ex.muscles
+  const _pm = exerciseMuscles(ex);
+  const muscleChipsHtml = _pm
     ? `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px;">
-        ${(ex.muscles.primary || []).map(m => `<span class="tag tag-muscle-primary">${m}</span>`).join('')}
-        ${(ex.muscles.secondary || []).map(m => `<span class="tag tag-muscle-secondary">${m}</span>`).join('')}
+        ${(_pm.primary || []).map(m => `<span class="tag tag-muscle-primary">${m}</span>`).join('')}
+        ${(_pm.secondary || []).map(m => `<span class="tag tag-muscle-secondary">${m}</span>`).join('')}
        </div>`
     : '';
 
@@ -2567,6 +2562,10 @@ async function pruneEmptySessions() {
 
 // ── Daily auto-backup ─────────────────────────────────────────────
 async function maybeAutoBackup() {
+  // Disabled: auto-download triggered a JSON file download on every app open,
+  // which is unwanted. Backups can be re-added later as an explicit button.
+  return;
+  // eslint-disable-next-line no-unreachable
   const lastBackup = localStorage.getItem('lastAutoBackup');
   if (lastBackup === today()) return; // already backed up today
 
