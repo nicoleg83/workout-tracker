@@ -37,6 +37,10 @@ function today() {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 }
+// Haptic feedback — degrades silently on devices/browsers without vibrate support
+function haptic(pattern = 10) {
+  try { navigator.vibrate?.(pattern); } catch (_) {}
+}
 function fmtDate(d) {
   return new Date(d + 'T00:00:00').toLocaleDateString('en-US', { weekday:'short', month:'short', day:'numeric' });
 }
@@ -336,20 +340,20 @@ function setTab(tab) {
   document.querySelectorAll('.tab-btn').forEach(b => {
     b.classList.toggle('active', b.dataset.tab === tab);
   });
-  renderView();
+  renderView('tab');
   // Background-refresh sessions when switching to History
   if (tab === 'history' && navigator.onLine) {
     loadSessions().then(() => { if (state.view === 'history') renderView(); });
   }
 }
 
-function navigateTo(view, data = {}) {
+function navigateTo(view, data = {}, direction = 'forward') {
   state.view = view;
   if (data.exercise) state.detailExercise = data.exercise;
   if (data.day) state.activeDay = data.day;
   if (data.exId !== undefined) state.progressExercise = data.exId;
   if (data.supersetId !== undefined) state.detailSupersetId = data.supersetId;
-  renderView();
+  renderView(direction);
 }
 
 // ── Session management ───────────────────────────────────────────
@@ -534,6 +538,7 @@ async function toggleComplete(exerciseId, setIndex) {
   } else {
     // Completing: create a fresh log entry
     set.completed = true;
+    haptic(10);
 
     const log = {
       id: uuid(),
@@ -966,7 +971,7 @@ function renderSeedingOverlay() {
 }
 
 // ── Main render ──────────────────────────────────────────────────
-function renderView() {
+function renderView(direction = 'none') {
   const el = document.getElementById('main-view');
   if (!el) return;
   switch (state.view) {
@@ -983,6 +988,12 @@ function renderView() {
   }
   el.scrollTop = 0;
   bindViewEvents();
+  // Navigation transition — subtle slide+fade (single-container safe, no overflow flash)
+  el.classList.remove('view-anim-forward', 'view-anim-back', 'view-anim-tab');
+  if (direction === 'forward' || direction === 'back' || direction === 'tab') {
+    void el.offsetWidth; // force reflow so re-adding the class restarts the animation
+    el.classList.add(`view-anim-${direction}`);
+  }
 }
 
 // ── Home view ────────────────────────────────────────────────────
@@ -1033,6 +1044,24 @@ function renderHome() {
   }).join('');
 
   const userEmail = state.user?.email || '';
+
+  // 7-day workout frequency dots (today rightmost). Only shown once a finished session exists.
+  let streakDots = '';
+  if (state.sessions.some(isSessionFinished)) {
+    const doneDates = new Set(state.sessions.filter(isSessionFinished).map(s => s.date));
+    const anchor = new Date(today() + 'T00:00:00');
+    const dotEls = [];
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(anchor);
+      d.setDate(anchor.getDate() - i);
+      const ds = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      const filled = doneDates.has(ds) ? ' filled' : '';
+      const isToday = i === 0 ? ' today' : '';
+      const label = d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }) + (i === 0 ? ' (today)' : '');
+      dotEls.push(`<div class="streak-dot${filled}${isToday}" title="${label}"></div>`);
+    }
+    streakDots = `<div class="streak-dots-row">${dotEls.join('')}</div>`;
+  }
   return `
     <div class="page-header">
       <div style="flex:1">
@@ -1047,6 +1076,7 @@ function renderHome() {
     </div>
     ${inProgress}
     ${lastWidget}
+    ${streakDots}
     <div class="day-cards">${cards}</div>`;
 }
 
@@ -1469,7 +1499,7 @@ function renderSupersetDetail() {
 
   return `
     <div class="page-header">
-      <button class="back-btn" aria-label="Back" onclick="navigateTo('workout')">
+      <button class="back-btn" aria-label="Back" onclick="navigateTo('workout', {}, 'back')">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
       </button>
       <div class="page-title" style="font-size:18px">${label}</div>
@@ -1859,10 +1889,35 @@ function buildProgressChart(history, pr, range) {
     prLine = `<line x1="${leftPad}" y1="${py}" x2="${svgW}" y2="${py}" stroke="#f59e0b" stroke-width="1" stroke-dasharray="4,3" opacity="0.4"/>`;
   }
 
-  const pts = history.map((h, i) => `${toX(i).toFixed(1)},${toY(h.bestSet.weight_lbs).toFixed(1)}`);
-  const polyPoints = pts.join(' ');
+  const coords = history.map((h, i) => [toX(i), toY(h.bestSet.weight_lbs)]);
   const bottomY = topPad + chartH;
-  const fillPoints = `${pts.join(' ')} ${toX(history.length - 1).toFixed(1)},${bottomY} ${toX(0).toFixed(1)},${bottomY}`;
+  // Smooth cubic path through points (midpoint control handles, no library)
+  const smoothPath = (c) => {
+    if (c.length === 1) return `M${c[0][0].toFixed(1)},${c[0][1].toFixed(1)}`;
+    let d = `M${c[0][0].toFixed(1)},${c[0][1].toFixed(1)}`;
+    for (let i = 1; i < c.length; i++) {
+      const [x0, y0] = c[i - 1], [x1, y1] = c[i];
+      const cx = ((x0 + x1) / 2).toFixed(1);
+      d += ` C${cx},${y0.toFixed(1)} ${cx},${y1.toFixed(1)} ${x1.toFixed(1)},${y1.toFixed(1)}`;
+    }
+    return d;
+  };
+  const linePath = smoothPath(coords);
+  const areaPath = `${linePath} L${coords[coords.length - 1][0].toFixed(1)},${bottomY.toFixed(1)} L${coords[0][0].toFixed(1)},${bottomY.toFixed(1)} Z`;
+  // Least-squares trend line across sessions (screen-space; affine of weight-space)
+  let trendLine = '';
+  if (coords.length >= 3) {
+    const n = coords.length;
+    const sx = coords.reduce((a, [x]) => a + x, 0);
+    const sy = coords.reduce((a, [, y]) => a + y, 0);
+    const sxy = coords.reduce((a, [x, y]) => a + x * y, 0);
+    const sxx = coords.reduce((a, [x]) => a + x * x, 0);
+    const denom = (n * sxx - sx * sx) || 1;
+    const slope = (n * sxy - sx * sy) / denom;
+    const intercept = (sy - slope * sx) / n;
+    const tx0 = coords[0][0], tx1 = coords[n - 1][0];
+    trendLine = `<line x1="${tx0.toFixed(1)}" y1="${(slope * tx0 + intercept).toFixed(1)}" x2="${tx1.toFixed(1)}" y2="${(slope * tx1 + intercept).toFixed(1)}" stroke="#606060" stroke-width="1" stroke-dasharray="3,3" opacity="0.5"/>`;
+  }
 
   const prDate = pr?.date;
   const dots = history.map((h, i) => {
@@ -1972,7 +2027,7 @@ function renderProgressExercise() {
 
   return `
     <div class="page-header">
-      <button class="back-btn" aria-label="Back" onclick="navigateTo('progress')">
+      <button class="back-btn" aria-label="Back" onclick="navigateTo('progress', {}, 'back')">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
       </button>
       <div class="page-title" style="font-size:18px">${ex.name}</div>
