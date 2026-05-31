@@ -1236,10 +1236,19 @@ function renderExerciseDetail() {
   let mediaEl = '';
   if (!isNoteOnly && ex.image_key) mediaEl = getExerciseMedia(ex.image_key);
 
+  // Muscle chips
+  const muscleChips = ex.muscles
+    ? [
+        ...(ex.muscles.primary || []).map(m => `<span class="tag tag-muscle-primary">${m}</span>`),
+        ...(ex.muscles.secondary || []).map(m => `<span class="tag tag-muscle-secondary">${m}</span>`),
+      ].join('')
+    : '';
+
   let infoCard = '';
-  if (!isNoteOnly && (instructions || equipChips || ex.weight_range)) {
+  if (!isNoteOnly && (instructions || equipChips || ex.weight_range || muscleChips)) {
     infoCard = `<div class="card">
       ${(equipChips || ex.weight_range) ? `<div class="detail-section-label">Equipment</div><div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;">${equipChips}${ex.weight_range ? `<span class="tag tag-muted">~${startingWeight(ex.weight_range)}</span>` : ''}</div>` : ''}
+      ${muscleChips ? `<div class="detail-section-label">Muscles</div><div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;">${muscleChips}</div>` : ''}
       ${instructions ? `<div class="detail-section-label">Instructions</div><ol class="instructions-list">${instructions}</ol>` : ''}
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;">
         <span class="tag">${ex.sets_target} sets</span>
@@ -1954,6 +1963,13 @@ function renderProgressExercise() {
     ? `<div class="exercise-media-wrap" style="margin-bottom:16px"><img class="exercise-media-img" src="icons/exercises/${ex.image_key}.webp" alt="" loading="lazy"></div>`
     : '';
 
+  const muscleChipsHtml = ex.muscles
+    ? `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px;">
+        ${(ex.muscles.primary || []).map(m => `<span class="tag tag-muscle-primary">${m}</span>`).join('')}
+        ${(ex.muscles.secondary || []).map(m => `<span class="tag tag-muscle-secondary">${m}</span>`).join('')}
+       </div>`
+    : '';
+
   return `
     <div class="page-header">
       <button class="back-btn" aria-label="Back" onclick="navigateTo('progress')">
@@ -1962,6 +1978,7 @@ function renderProgressExercise() {
       <div class="page-title" style="font-size:18px">${ex.name}</div>
     </div>
     ${mediaHtml}
+    ${muscleChipsHtml}
     ${prBar}
     ${chartHtml}
     <div class="section-label" style="margin-top:16px">Session history</div>
