@@ -1010,20 +1010,25 @@ function renderHome() {
       </div>
     </div>` : '';
 
-  const inProgress = state.activeSession ? `
+  // Show resume card if actively in a workout OR if a saved-but-exited session exists
+  const savedId = localStorage.getItem('activeWorkoutSessionId');
+  const resumableSession = state.activeSession
+    || (!state.activeSession && savedId ? state.sessions.find(s => s.id === savedId) : null);
+  const inProgress = resumableSession ? `
     <div class="card mb16" style="border-color: var(--pink);">
       <div style="font-size:12px;color:var(--pink);font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;">Workout in progress</div>
-      <div style="font-size:16px;font-weight:700;margin-bottom:12px;">${state.activeSession.day} — ${dayNameMap[state.activeSession.day] || ''}</div>
+      <div style="font-size:16px;font-weight:700;margin-bottom:12px;">${resumableSession.day} — ${dayNameMap[resumableSession.day] || ''}</div>
       <button class="btn btn-primary" onclick="navigateTo('workout')">Resume</button>
     </div>` : '';
 
   const cards = days.map(({ day, name, muscles }) => {
     const count = state.exercises.filter(e => e.day === day).length;
+    const isResumable = resumableSession?.day === day;
     return `<div class="day-card" data-day="${day}">
       <div class="day-card-label">${day}</div>
       <div class="day-card-name">${name}</div>
       <div class="day-card-meta">${muscles} · ${count} exercises</div>
-      <button class="day-card-start" data-day-start="${day}">${state.activeSession?.day === day ? 'Resume Workout' : 'Start Workout'}</button>
+      <button class="day-card-start" data-day-start="${day}">${isResumable ? 'Resume Workout' : 'Start Workout'}</button>
     </div>`;
   }).join('');
 
