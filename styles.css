@@ -615,7 +615,9 @@ body {
 /* ── Toast ── */
 #toast {
   position: fixed;
-  top: calc(env(safe-area-inset-top, 0px) + 16px);
+  /* Guarantee the toast clears the notch / Dynamic Island even when
+     env(safe-area-inset-top) resolves to 0 (e.g. in-browser, not standalone). */
+  top: max(56px, calc(env(safe-area-inset-top, 0px) + 16px));
   left: 50%;
   transform: translateX(-50%) translateY(-80px);
   background: var(--bg2);

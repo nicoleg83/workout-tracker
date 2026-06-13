@@ -26,6 +26,7 @@ const state = {
   historyCache: null,
   progressLoaded: false,
   sessionPRCount: 0,
+  sessionPRExercises: new Set(),
   loading: false,
   seeding: false,
 };
@@ -54,6 +55,17 @@ function exerciseMuscles(ex) {
 }
 function fmtDate(d) {
   return new Date(d + 'T00:00:00').toLocaleDateString('en-US', { weekday:'short', month:'short', day:'numeric' });
+}
+// Collapse duplicate set_number entries (e.g. an offline un-complete that left
+// an orphan row in Supabase) keeping the most recently logged one. Without this,
+// a prior session can render the same set number twice in the "Last session" card.
+function dedupeSetLogs(logs) {
+  const bySet = new Map();
+  for (const l of (logs || [])) {
+    const cur = bySet.get(l.set_number);
+    if (!cur || (l.logged_at || '') > (cur.logged_at || '')) bySet.set(l.set_number, l);
+  }
+  return Array.from(bySet.values()).sort((a, b) => a.set_number - b.set_number);
 }
 function daysAgo(d) {
   // Compare midnight-to-midnight so "Today" never flips to "Yesterday" mid-day
@@ -240,6 +252,11 @@ async function loadLastLogs(day) {
     if (!state.lastLogs[log.exercise_id]) state.lastLogs[log.exercise_id] = [];
     state.lastLogs[log.exercise_id].push(log);
   }
+  // Collapse any duplicate set_number rows (orphans from offline un-completes)
+  // so both the prefill and the "Last session" card show each set once.
+  for (const exId of Object.keys(state.lastLogs)) {
+    state.lastLogs[exId] = dedupeSetLogs(state.lastLogs[exId]);
+  }
 }
 
 async function loadProgressData() {
@@ -315,7 +332,10 @@ function checkPR(exerciseId, weight, reps) {
     const ex = state.sessionExercises.find(e => e.id === exerciseId)
             || state.exercises.find(e => e.id === exerciseId);
     const name = ex?.name || 'Exercise';
-    state.sessionPRCount = (state.sessionPRCount || 0) + 1;
+    // Count one PR per exercise per session — beating your own new best on a
+    // later set in the same session shouldn't inflate the summary's PR tally.
+    state.sessionPRExercises.add(exerciseId);
+    state.sessionPRCount = state.sessionPRExercises.size;
     state.progressLoaded = false;
     toast(`New PR — ${name} 🏆`, 'success');
     haptic([10, 60, 20]);
@@ -384,6 +404,8 @@ async function startSession(day) {
   await loadLastLogs(day);
   state.skipped = new Set();
   state.exerciseNotes = {};
+  state.sessionPRCount = 0;
+  state.sessionPRExercises = new Set();
 
   const session = {
     id: uuid(),
@@ -440,11 +462,11 @@ async function saveSessionMeta(finished = false) {
 
 async function finishSession() {
   const exercises = currentDayExercises();
-  const counted = exercises.filter(ex => !state.skipped.has(ex.id) && !isExerciseEmpty(ex.id));
-  const completedSets = counted.flatMap(ex =>
-    (state.setLogs[ex.id] || []).filter(s => s.completed)
-  ).length;
-  const totalSets = counted.flatMap(ex => state.setLogs[ex.id] || []).length;
+  // Completion = sets you checked off / all planned sets across every exercise
+  // you didn't skip (warmup/abs note-only items excluded). This matches the
+  // progress bar shown during the workout — untouched exercises count against
+  // you, so 100% means you actually finished everything you set out to do.
+  const { done: completedSets, total: totalSets } = exerciseProgress(exercises);
 
   // Mark as finished so it appears in history; localStorage cleared in completeAndGoHome
   await saveSessionMeta(true);
@@ -465,6 +487,7 @@ async function completeAndGoHome() {
   state.exerciseNotes = {};
   state.progressLoaded = false;
   state.sessionPRCount = 0;
+  state.sessionPRExercises = new Set();
   stopRestTimer();
   await loadSessions();
   setTab('home');
@@ -497,6 +520,7 @@ async function endAndGoHome() {
   state.exerciseNotes = {};
   state.progressLoaded = false;
   state.sessionPRCount = 0;
+  state.sessionPRExercises = new Set();
   stopRestTimer();
   await loadSessions();
   setTab('home');
@@ -520,6 +544,7 @@ async function cancelSession() {
   state.exerciseNotes = {};
   state.progressLoaded = false;
   state.sessionPRCount = 0;
+  state.sessionPRExercises = new Set();
   stopRestTimer();
   await loadSessions();
   setTab('home');
@@ -2439,6 +2464,7 @@ async function handleLogout() {
   state.historyCache = null;
   state.progressLoaded = false;
   state.sessionPRCount = 0;
+  state.sessionPRExercises = new Set();
   showLoginScreen();
 }
 
