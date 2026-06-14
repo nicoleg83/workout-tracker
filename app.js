@@ -21,6 +21,9 @@ const state = {
   progressExercise: null,
   progressRange: '3M',
   detailSupersetId: null,
+  editDay: null,
+  editDraft: null,
+  editDirty: false,
   prCache: null,
   lastCache: null,
   historyCache: null,
@@ -868,7 +871,7 @@ function renameSuperset(supersetId, newName) {
   routineList().forEach(ex => {
     if (ex.superset_group === supersetId) { ex.section = newName; changed.push(ex); }
   });
-  if (state.view === 'edit-day') persistExercises(changed);
+  if (state.view === 'edit-day') markEditDirty();
   renderView();
 }
 
@@ -898,7 +901,7 @@ function startRenameSection(sectionName) {
     routineList().forEach(ex => {
       if (ex.section === sectionName) { ex.section = newName; changed.push(ex); }
     });
-    if (state.view === 'edit-day') persistExercises(changed);
+    if (state.view === 'edit-day') markEditDirty();
     renderView();
   };
   input.addEventListener('blur', () => setTimeout(save, 120));
@@ -914,7 +917,7 @@ function ungroupSuperset(supersetId) {
   routineList().forEach(ex => {
     if (ex.superset_group === supersetId) { ex.superset_group = null; ex.section = ''; changed.push(ex); }
   });
-  if (state.view === 'edit-day') persistExercises(changed);
+  if (state.view === 'edit-day') markEditDirty();
   renderView();
 }
 
@@ -983,7 +986,7 @@ function createNewGroup(exId) {
   ex.section = groupName;
   next.superset_group = groupId;
   next.section = groupName;
-  if (state.view === 'edit-day') persistExercises([ex, next]);
+  if (state.view === 'edit-day') markEditDirty();
   renderView();
 }
 
@@ -994,7 +997,7 @@ function addExerciseToGroup(exId, supersetId) {
   if (!ex || !ref) return;
   ex.superset_group = supersetId;
   ex.section = ref.section;
-  if (state.view === 'edit-day') persistExercises([ex]);
+  if (state.view === 'edit-day') markEditDirty();
   renderView();
 }
 
@@ -1014,65 +1017,115 @@ async function persistExercise(ex) {
 }
 function persistExercises(list) { (list || []).forEach(ex => persistExercise(ex)); }
 
-// Dense-renumber a day's sort_order (1..N) and persist any that changed.
-function renumberDay(day) {
-  const list = state.exercises.filter(e => e.day === day).sort((a, b) => a.sort_order - b.sort_order);
-  const changed = [];
-  list.forEach((ex, i) => { if (ex.sort_order !== i + 1) { ex.sort_order = i + 1; changed.push(ex); } });
-  persistExercises(changed);
-}
-
 function editDayExercises() {
-  return state.exercises.filter(e => e.day === state.editDay).sort((a, b) => a.sort_order - b.sort_order);
+  // Edit mode works on a draft (array order = display order); nothing persists
+  // until "Save".
+  return state.editDraft || [];
 }
 
-// Remove from its day → Library (keeps the row + all history; never destroyed).
-function removeToLibrary(exId) {
-  const ex = state.exercises.find(e => e.id === exId);
-  if (!ex) return;
-  if (!confirm(`Remove "${ex.name}" from ${ex.day}? It stays in your Library with its history and can be re-added.`)) return;
-  const fromDay = ex.day;
-  ex.day = 'Library'; ex.superset_group = null; ex.section = '';
-  persistExercise(ex);
-  renumberDay(fromDay);
-  toast('Moved to Library');
+// Enter the edit screen with a fresh draft (clones of the day's catalog rows).
+function openEditDay(day) {
+  state.editDay = day;
+  state.editDraft = state.exercises
+    .filter(e => e.day === day)
+    .sort((a, b) => a.sort_order - b.sort_order)
+    .map(e => ({ ...e }));
+  state.editDirty = false;
+  navigateTo('edit-day', {}, 'forward');
+}
+
+function markEditDirty() { state.editDirty = true; }
+
+// Remove from the draft (moves to Library only once saved).
+function removeFromDraft(exId) {
+  const d = (state.editDraft || []).find(e => e.id === exId);
+  if (!d) return;
+  if (!confirm(`Remove "${d.name}" from ${state.editDay}? It moves to your Library (with its history) when you save.`)) return;
+  state.editDraft = state.editDraft.filter(e => e.id !== exId);
+  state.editDirty = true;
   renderView();
 }
 
-// Add a library exercise into a day (lands ungrouped at the end of the flat list).
-function addExerciseToDay(exId, day) {
+// Add a Library exercise into the draft (ungrouped, at the end).
+function addExerciseToDraft(exId) {
   const ex = state.exercises.find(e => e.id === exId);
   if (!ex) return;
-  const maxOrder = state.exercises.filter(e => e.day === day).reduce((m, e) => Math.max(m, e.sort_order || 0), 0);
-  ex.day = day; ex.section = ''; ex.superset_group = null; ex.sort_order = maxOrder + 1;
-  persistExercise(ex);
-  toast(`Added to ${day}`);
+  if ((state.editDraft || []).some(e => e.id === exId)) { toast('Already in this day'); return; }
+  state.editDraft.push({ ...ex, day: state.editDay, section: '', superset_group: null });
+  state.editDirty = true;
   renderView();
 }
 
-// After a drag in the edit-day screen, read the DOM as the source of truth and
-// write each exercise's new sort_order / section / superset_group back.
-function rebuildCatalogOrderFromDOM() {
+// After a drag, rebuild the draft order + section/group from the DOM (no save).
+function rebuildDraftFromDOM() {
   const view = document.getElementById('main-view');
   if (!view) return;
-  let order = 0;
-  const changed = [];
+  const next = [];
   view.querySelectorAll('#edit-sortable .section-group').forEach(group => {
     const section = group.dataset.section || '';
     const ssId = group.dataset.supersetId || null;
     group.querySelectorAll('.exercise-row[data-ex-id]').forEach(row => {
-      const ex = state.exercises.find(e => e.id === row.dataset.exId);
-      if (!ex) return;
-      order++;
-      const ss = ssId || null;
-      if (ex.sort_order !== order || (ex.section || '') !== section || (ex.superset_group || null) !== ss) {
-        ex.sort_order = order; ex.section = section; ex.superset_group = ss;
-        changed.push(ex);
-      }
+      const d = (state.editDraft || []).find(e => e.id === row.dataset.exId);
+      if (!d) return;
+      d.section = section; d.superset_group = ssId || null;
+      next.push(d);
     });
   });
-  persistExercises(changed);
+  if (next.length) state.editDraft = next;
+  state.editDirty = true;
   renderView();
+}
+
+// Discard the draft (confirm only if there are unsaved changes).
+function cancelEditDay() {
+  if (state.editDirty && !confirm('Discard unsaved changes to this day?')) return;
+  state.editDraft = null;
+  state.editDirty = false;
+  setTab('home');
+}
+
+// Commit the draft to the catalog — this is the ONLY place edits persist.
+// Kept exercises get their new order/section/group; removed ones go to Library.
+function saveEditDay() {
+  const day = state.editDay;
+  const draft = state.editDraft || [];
+  const draftIds = new Set(draft.map(d => d.id));
+  draft.forEach((d, i) => {
+    const ex = state.exercises.find(e => e.id === d.id);
+    if (!ex) return;
+    ex.day = day;
+    ex.section = d.section || '';
+    ex.superset_group = d.superset_group || null;
+    ex.sort_order = i + 1;
+    persistExercise(ex);
+  });
+  state.exercises
+    .filter(e => e.day === day && !draftIds.has(e.id))
+    .forEach(ex => { ex.day = 'Library'; ex.superset_group = null; ex.section = ''; persistExercise(ex); });
+  state.editDraft = null;
+  state.editDirty = false;
+  toast('Routine saved');
+  setTab('home');
+}
+
+// From the active workout: persist the current exercise order + grouping as the
+// default for this day. Only real catalog exercises are saved (Warmup/Abs and
+// unsaved custom exercises are skipped).
+function saveSessionAsDefault() {
+  const day = state.activeDay;
+  if (!day) return;
+  if (!confirm(`Save this exercise order & grouping as your default for ${day}?`)) return;
+  let order = 0;
+  state.sessionExercises.forEach(se => {
+    const ex = state.exercises.find(e => e.id === se.id);
+    if (!ex) return; // synthetic warmup/abs/custom — not in the catalog
+    order++;
+    ex.sort_order = order;
+    ex.section = se.section || '';
+    ex.superset_group = se.superset_group || null;
+    persistExercise(ex);
+  });
+  toast('Saved as your default');
 }
 
 // ── Edit-day view ────────────────────────────────────────────────────
@@ -1101,12 +1154,12 @@ function renderEditDay() {
 
   let html = `
     <div class="page-header">
-      <button class="back-btn" aria-label="Back" onclick="setTab('home')">
+      <button class="back-btn" aria-label="Back" onclick="cancelEditDay()">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
       </button>
       <div style="flex:1">
         <div class="page-title" style="font-size:18px">Edit ${esc(day)}</div>
-        <div class="page-subtitle">Drag to reorder · changes save automatically</div>
+        <div class="page-subtitle">Drag to reorder · tap Save to keep changes</div>
       </div>
     </div>
     <div id="edit-sortable">`;
@@ -1148,6 +1201,10 @@ function renderEditDay() {
   if (!exercises.length) {
     html += `<div class="empty"><div class="empty-icon">🗂️</div><div class="empty-body">No exercises in this day yet. Tap “+ Add exercise” to pull from your Library.</div></div>`;
   }
+  html += `<div style="margin-top:20px;">
+      <button class="btn btn-primary" onclick="saveEditDay()">Save changes</button>
+      <div class="btn-row mt8"><button class="btn btn-ghost" onclick="cancelEditDay()">Cancel</button></div>
+    </div>`;
   return html;
 }
 
@@ -1173,7 +1230,7 @@ function showAddToDayPicker(day) {
   sheet.querySelector('.group-picker-backdrop').addEventListener('click', closeGroupPicker);
   sheet.querySelector('.group-picker-cancel').addEventListener('click', closeGroupPicker);
   sheet.querySelectorAll('[data-add-lib]').forEach(btn => {
-    btn.addEventListener('click', () => { closeGroupPicker(); addExerciseToDay(btn.dataset.addLib, day); });
+    btn.addEventListener('click', () => { closeGroupPicker(); addExerciseToDraft(btn.dataset.addLib); });
   });
 }
 
@@ -1507,6 +1564,7 @@ function renderWorkout() {
 
   html += `</div>
     <button class="add-exercise-btn" onclick="addCustomExercise()">+ Add exercise</button>
+    <button class="btn btn-ghost" style="margin-top:8px" onclick="saveSessionAsDefault()">⤓ Save current order as my default</button>
     <div style="margin-top:16px;">
       <button class="btn btn-primary" onclick="finishSession()">Finish Workout</button>
       <div class="btn-row mt8">
@@ -2642,12 +2700,11 @@ function bindViewEvents() {
   view.querySelectorAll('[data-edit-day]').forEach(btn => {
     btn.addEventListener('click', e => {
       e.stopPropagation();
-      state.editDay = btn.dataset.editDay;
-      navigateTo('edit-day', {}, 'forward');
+      openEditDay(btn.dataset.editDay);
     });
   });
   view.querySelectorAll('.ex-remove-btn[data-remove-ex]').forEach(btn => {
-    btn.addEventListener('click', e => { e.stopPropagation(); removeToLibrary(btn.dataset.removeEx); });
+    btn.addEventListener('click', e => { e.stopPropagation(); removeFromDraft(btn.dataset.removeEx); });
   });
   view.querySelectorAll('[data-edit-add-day]').forEach(btn => {
     btn.addEventListener('click', e => { e.stopPropagation(); showAddToDayPicker(btn.dataset.editAddDay); });
@@ -2656,12 +2713,12 @@ function bindViewEvents() {
   if (editSortEl && typeof Sortable !== 'undefined') {
     Sortable.create(editSortEl, {
       handle: '.section-drag-handle', animation: 150, delay: 120, delayOnTouchOnly: true,
-      draggable: '.section-group', onEnd() { rebuildCatalogOrderFromDOM(); },
+      draggable: '.section-group', onEnd() { rebuildDraftFromDOM(); },
     });
     editSortEl.querySelectorAll('.exercise-sortable-inner').forEach(innerEl => {
       Sortable.create(innerEl, {
         group: 'edit-ex', handle: '.drag-handle', animation: 150, delay: 120, delayOnTouchOnly: true,
-        onEnd() { rebuildCatalogOrderFromDOM(); },
+        onEnd() { rebuildDraftFromDOM(); },
       });
     });
   }
