@@ -139,9 +139,12 @@ function setAssistedOverride(exId, value) {
   if (!ex) return;
   try { localStorage.setItem(assistedKey(ex), value ? '1' : '0'); } catch (_) {}
 }
-function toggleAssisted(exId) {
+async function toggleAssisted(exId) {
   setAssistedOverride(exId, !isAssistedById(exId));
-  state.progressLoaded = false; // recompute PRs/best-sets with the new direction
+  // Recompute PRs/best-sets now so checkPR compares against the right baseline
+  // for the new direction (not just on the next Progress visit).
+  state.progressLoaded = false;
+  await loadProgressData();
   renderView();
 }
 function buildSectionGroups(exercises) {
