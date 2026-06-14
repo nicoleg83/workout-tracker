@@ -113,10 +113,12 @@ function saveBarWeight(exId, value) {
   } catch (_) {}
 }
 function buildSectionGroups(exercises) {
+  // Group by section. An empty section ('') is a heading-less flat list — this
+  // is where ungrouped exercises land so they "merge into one long list."
   const groups = [];
   const idx = {};
   for (const ex of exercises) {
-    const s = ex.section || 'Other';
+    const s = ex.section || '';
     if (!(s in idx)) { idx[s] = groups.length; groups.push({ section: s, exercises: [] }); }
     groups[idx[s]].exercises.push(ex);
   }
@@ -788,8 +790,19 @@ function toggleSuperset(exerciseId) {
   navigateTo('exercise-detail', { exercise: state.sessionExercises.find(e => e.id === exerciseId) });
 }
 
+// The working exercise list for editing context: the catalog rows for the day
+// being edited, or the active session's exercises during a workout.
+function routineList() {
+  if (state.view === 'edit-day') {
+    return state.exercises
+      .filter(e => e.day === state.editDay)
+      .sort((a, b) => a.sort_order - b.sort_order);
+  }
+  return state.sessionExercises;
+}
+
 function nextGroupName() {
-  const existing = new Set(state.sessionExercises.map(e => e.section));
+  const existing = new Set(routineList().map(e => e.section));
   let n = 1;
   while (existing.has(`Group ${n}`)) n++;
   return `Group ${n}`;
@@ -851,9 +864,11 @@ function startRenameSuperset(supersetId) {
 }
 
 function renameSuperset(supersetId, newName) {
-  state.sessionExercises.forEach(ex => {
-    if (ex.superset_group === supersetId) ex.section = newName;
+  const changed = [];
+  routineList().forEach(ex => {
+    if (ex.superset_group === supersetId) { ex.section = newName; changed.push(ex); }
   });
+  if (state.view === 'edit-day') persistExercises(changed);
   renderView();
 }
 
@@ -879,9 +894,11 @@ function startRenameSection(sectionName) {
     if (saved) return;
     saved = true;
     const newName = input.value.trim() || currentName;
-    state.sessionExercises.forEach(ex => {
-      if (ex.section === sectionName) ex.section = newName;
+    const changed = [];
+    routineList().forEach(ex => {
+      if (ex.section === sectionName) { ex.section = newName; changed.push(ex); }
     });
+    if (state.view === 'edit-day') persistExercises(changed);
     renderView();
   };
   input.addEventListener('blur', () => setTimeout(save, 120));
@@ -891,17 +908,22 @@ function startRenameSection(sectionName) {
 
 function ungroupSuperset(supersetId) {
   document.querySelectorAll('.ss-dropdown').forEach(el => el.remove());
-  state.sessionExercises.forEach(ex => {
-    if (ex.superset_group === supersetId) ex.superset_group = null;
+  // Ungroup → drop the section heading and merge into the flat list (set
+  // section=''), so the exercises become one continuous list.
+  const changed = [];
+  routineList().forEach(ex => {
+    if (ex.superset_group === supersetId) { ex.superset_group = null; ex.section = ''; changed.push(ex); }
   });
+  if (state.view === 'edit-day') persistExercises(changed);
   renderView();
 }
 
 function showGroupPicker(exId) {
-  const ex = state.sessionExercises.find(e => e.id === exId);
+  const list = routineList();
+  const ex = list.find(e => e.id === exId);
   if (!ex) return;
   const groups = new Map();
-  state.sessionExercises.forEach(e => {
+  list.forEach(e => {
     if (e.superset_group) {
       if (!groups.has(e.superset_group)) groups.set(e.superset_group, { label: e.section, names: [] });
       groups.get(e.superset_group).names.push(e.name);
@@ -949,10 +971,11 @@ function closeGroupPicker() {
 }
 
 function createNewGroup(exId) {
-  const ex = state.sessionExercises.find(e => e.id === exId);
+  const list = routineList();
+  const ex = list.find(e => e.id === exId);
   if (!ex) return;
-  const idx = state.sessionExercises.indexOf(ex);
-  const next = state.sessionExercises[idx + 1];
+  const idx = list.indexOf(ex);
+  const next = list[idx + 1];
   if (!next) { toast('No next exercise to pair with'); return; }
   const groupId = `superset-custom-${Date.now()}`;
   const groupName = nextGroupName();
@@ -960,16 +983,198 @@ function createNewGroup(exId) {
   ex.section = groupName;
   next.superset_group = groupId;
   next.section = groupName;
+  if (state.view === 'edit-day') persistExercises([ex, next]);
   renderView();
 }
 
 function addExerciseToGroup(exId, supersetId) {
-  const ex = state.sessionExercises.find(e => e.id === exId);
-  const ref = state.sessionExercises.find(e => e.superset_group === supersetId);
+  const list = routineList();
+  const ex = list.find(e => e.id === exId);
+  const ref = list.find(e => e.superset_group === supersetId);
   if (!ex || !ref) return;
   ex.superset_group = supersetId;
   ex.section = ref.section;
+  if (state.view === 'edit-day') persistExercises([ex]);
   renderView();
+}
+
+// ── Routine editing: persistence to the exercises catalog ────────────
+// Supabase `exercises` columns (note: `muscles` is NOT a column — it lives in
+// the bundled EXERCISES constant only, so we must never send it in a payload).
+const EXERCISE_COLUMNS = ['id','day','section','name','equipment','weight_range','sets_target','reps_target','instructions','image_key','superset_group','sort_order'];
+function toExerciseRow(ex) {
+  const row = {};
+  for (const k of EXERCISE_COLUMNS) if (ex[k] !== undefined) row[k] = ex[k];
+  return row;
+}
+async function persistExercise(ex) {
+  await DB.put('exercises', ex);
+  await DB.queueSync('exercises', 'update', toExerciseRow(ex));
+  syncIfOnline();
+}
+function persistExercises(list) { (list || []).forEach(ex => persistExercise(ex)); }
+
+// Dense-renumber a day's sort_order (1..N) and persist any that changed.
+function renumberDay(day) {
+  const list = state.exercises.filter(e => e.day === day).sort((a, b) => a.sort_order - b.sort_order);
+  const changed = [];
+  list.forEach((ex, i) => { if (ex.sort_order !== i + 1) { ex.sort_order = i + 1; changed.push(ex); } });
+  persistExercises(changed);
+}
+
+function editDayExercises() {
+  return state.exercises.filter(e => e.day === state.editDay).sort((a, b) => a.sort_order - b.sort_order);
+}
+
+// Remove from its day → Library (keeps the row + all history; never destroyed).
+function removeToLibrary(exId) {
+  const ex = state.exercises.find(e => e.id === exId);
+  if (!ex) return;
+  if (!confirm(`Remove "${ex.name}" from ${ex.day}? It stays in your Library with its history and can be re-added.`)) return;
+  const fromDay = ex.day;
+  ex.day = 'Library'; ex.superset_group = null; ex.section = '';
+  persistExercise(ex);
+  renumberDay(fromDay);
+  toast('Moved to Library');
+  renderView();
+}
+
+// Add a library exercise into a day (lands ungrouped at the end of the flat list).
+function addExerciseToDay(exId, day) {
+  const ex = state.exercises.find(e => e.id === exId);
+  if (!ex) return;
+  const maxOrder = state.exercises.filter(e => e.day === day).reduce((m, e) => Math.max(m, e.sort_order || 0), 0);
+  ex.day = day; ex.section = ''; ex.superset_group = null; ex.sort_order = maxOrder + 1;
+  persistExercise(ex);
+  toast(`Added to ${day}`);
+  renderView();
+}
+
+// After a drag in the edit-day screen, read the DOM as the source of truth and
+// write each exercise's new sort_order / section / superset_group back.
+function rebuildCatalogOrderFromDOM() {
+  const view = document.getElementById('main-view');
+  if (!view) return;
+  let order = 0;
+  const changed = [];
+  view.querySelectorAll('#edit-sortable .section-group').forEach(group => {
+    const section = group.dataset.section || '';
+    const ssId = group.dataset.supersetId || null;
+    group.querySelectorAll('.exercise-row[data-ex-id]').forEach(row => {
+      const ex = state.exercises.find(e => e.id === row.dataset.exId);
+      if (!ex) return;
+      order++;
+      const ss = ssId || null;
+      if (ex.sort_order !== order || (ex.section || '') !== section || (ex.superset_group || null) !== ss) {
+        ex.sort_order = order; ex.section = section; ex.superset_group = ss;
+        changed.push(ex);
+      }
+    });
+  });
+  persistExercises(changed);
+  renderView();
+}
+
+// ── Edit-day view ────────────────────────────────────────────────────
+function editRow(ex) {
+  const thumb = IMAGE_KEYS.has(ex.image_key)
+    ? `<img class="exercise-thumb-img" src="icons/exercises/${ex.image_key}.webp" alt="" loading="lazy" />`
+    : (ILLUSTRATIONS[ex.image_key] || ILLUSTRATIONS['_placeholder']).replace(/viewBox="[^"]*"/, 'viewBox="0 0 120 160"');
+  return `<div class="exercise-row" data-ex-id="${ex.id}">
+    <div class="drag-handle">⠿</div>
+    <div class="exercise-row-thumb">${thumb}</div>
+    <div class="exercise-row-info">
+      <div class="exercise-row-name">${esc(ex.name)}</div>
+      <div class="exercise-row-meta">${ex.sets_target}×${esc(ex.reps_target || '')}${ex.equipment ? ' · ' + esc(ex.equipment) : ''}</div>
+    </div>
+    <div class="exercise-row-end" style="gap:6px">
+      <button class="ex-group-btn" data-group-ex="${ex.id}" aria-label="Group"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg></button>
+      <button class="ex-remove-btn" data-remove-ex="${ex.id}" aria-label="Remove from day"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6l-12 12M6 6l12 12"/></svg></button>
+    </div>
+  </div>`;
+}
+
+function renderEditDay() {
+  const day = state.editDay;
+  const exercises = editDayExercises();
+  const groups = buildSectionGroups(exercises);
+
+  let html = `
+    <div class="page-header">
+      <button class="back-btn" aria-label="Back" onclick="setTab('home')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+      </button>
+      <div style="flex:1">
+        <div class="page-title" style="font-size:18px">Edit ${esc(day)}</div>
+        <div class="page-subtitle">Drag to reorder · changes save automatically</div>
+      </div>
+    </div>
+    <div id="edit-sortable">`;
+
+  for (const { section, exercises: groupExs } of groups) {
+    const supersetId = groupExs[0]?.superset_group ? groupExs[0].superset_group : null;
+    const isSuperset = supersetId && groupExs.every(ex => ex.superset_group === supersetId);
+    const rows = groupExs.map(editRow).join('');
+
+    if (isSuperset) {
+      html += `<div class="section-group" data-section="${esc(section)}" data-superset-id="${esc(supersetId)}">
+        <div class="superset-card" data-superset-id="${esc(supersetId)}">
+          <div class="superset-card-header section-draggable">
+            <div style="display:flex;align-items:center;gap:8px">
+              <span class="section-drag-handle">⠿</span>
+              <span class="superset-card-label">${esc(section || 'Superset')}</span>
+            </div>
+            <button class="ss-menu-btn" data-ss-menu="${esc(supersetId)}">⋮</button>
+          </div>
+          <div class="exercise-sortable-inner">${rows}</div>
+        </div>
+      </div>`;
+    } else {
+      const label = section === '' ? '' : `
+        <div class="section-label section-draggable">
+          <span class="section-drag-handle">⠿</span>
+          <span class="section-name-label">${esc(section)}</span>
+          <button class="section-rename-btn" data-rename-section="${esc(section)}" aria-label="Rename section"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>
+        </div>`;
+      html += `<div class="section-group" data-section="${esc(section)}" data-superset-id="">
+        ${label}
+        <div class="exercise-sortable-inner">${rows}</div>
+      </div>`;
+    }
+  }
+
+  html += `</div>
+    <button class="add-exercise-btn" data-edit-add-day="${esc(day)}">+ Add exercise</button>`;
+  if (!exercises.length) {
+    html += `<div class="empty"><div class="empty-icon">🗂️</div><div class="empty-body">No exercises in this day yet. Tap “+ Add exercise” to pull from your Library.</div></div>`;
+  }
+  return html;
+}
+
+// Bottom sheet: pick a Library exercise to add into the day being edited.
+function showAddToDayPicker(day) {
+  const libs = state.exercises.filter(e => e.day === 'Library').sort((a, b) => a.name.localeCompare(b.name));
+  const opts = libs.map(ex => `
+    <button class="group-sheet-option" data-add-lib="${ex.id}">
+      <div><span class="group-sheet-label">${esc(ex.name)}</span><span class="group-sheet-meta">${esc(ex.equipment || '')}</span></div>
+    </button>`).join('');
+  const sheet = document.createElement('div');
+  sheet.id = 'group-picker-sheet';
+  sheet.innerHTML = `
+    <div class="group-picker-backdrop"></div>
+    <div class="group-picker-panel">
+      <div class="group-picker-handle"></div>
+      <div class="group-picker-title">Add to ${esc(day)}</div>
+      ${opts || '<div style="padding:8px 4px;color:var(--text2);font-size:14px">Your Library is empty. Remove an exercise from a day, or create new ones in the Library tab.</div>'}
+      <button class="group-picker-cancel">Cancel</button>
+    </div>`;
+  document.body.appendChild(sheet);
+  requestAnimationFrame(() => sheet.querySelector('.group-picker-panel').classList.add('open'));
+  sheet.querySelector('.group-picker-backdrop').addEventListener('click', closeGroupPicker);
+  sheet.querySelector('.group-picker-cancel').addEventListener('click', closeGroupPicker);
+  sheet.querySelectorAll('[data-add-lib]').forEach(btn => {
+    btn.addEventListener('click', () => { closeGroupPicker(); addExerciseToDay(btn.dataset.addLib, day); });
+  });
 }
 
 function saveExerciseNote(exerciseId, note) {
@@ -1068,6 +1273,7 @@ function renderView(direction = 'none') {
     case 'progress':          el.innerHTML = renderProgress(); break;
     case 'progress-exercise': el.innerHTML = renderProgressExercise(); break;
     case 'superset-detail':   el.innerHTML = renderSupersetDetail(); break;
+    case 'edit-day':          el.innerHTML = renderEditDay(); break;
     default:                  el.innerHTML = renderHome();
   }
   el.scrollTop = 0;
@@ -1120,7 +1326,12 @@ function renderHome() {
     const count = state.exercises.filter(e => e.day === day).length;
     const isResumable = resumableSession?.day === day;
     return `<div class="day-card" data-day="${day}">
-      <div class="day-card-label">${day}</div>
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+        <div class="day-card-label">${day}</div>
+        <button class="day-card-edit" data-edit-day="${day}" aria-label="Edit ${day}" style="background:none;border:none;color:var(--text3);padding:4px;margin:-4px -4px 0 0;cursor:pointer;-webkit-tap-highlight-color:transparent;">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+        </button>
+      </div>
       <div class="day-card-name">${name}</div>
       <div class="day-card-meta">${muscles} · ${count} exercises</div>
       <button class="day-card-start" data-day-start="${day}">${isResumable ? 'Resume Workout' : 'Start Workout'}</button>
@@ -1223,13 +1434,15 @@ function renderWorkout() {
 
       html += `</div></div></div>`;
     } else {
-      // ── Normal section ────────────────────────────────────────────
-      html += `<div class="section-group" data-section="${section}">
+      // ── Normal section (empty section name = heading-less flat list) ──
+      const sectionLabel = section === '' ? '' : `
         <div class="section-label section-draggable">
           <span class="section-drag-handle">⠿</span>
           <span class="section-name-label">${displaySection}</span>
           ${state.activeSession ? `<button class="section-rename-btn" data-rename-section="${section}" aria-label="Rename section"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>` : ''}
-        </div>
+        </div>`;
+      html += `<div class="section-group" data-section="${section}">
+        ${sectionLabel}
         <div class="exercise-sortable-inner">`;
 
       for (const ex of groupExs) {
@@ -2421,6 +2634,34 @@ function bindViewEvents() {
         delay: 120,
         delayOnTouchOnly: true,
         onEnd() { rebuildSessionExercisesFromDOM(); },
+      });
+    });
+  }
+
+  // ── Edit-day screen: entry point, remove, add, drag-to-persist ──
+  view.querySelectorAll('[data-edit-day]').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      state.editDay = btn.dataset.editDay;
+      navigateTo('edit-day', {}, 'forward');
+    });
+  });
+  view.querySelectorAll('.ex-remove-btn[data-remove-ex]').forEach(btn => {
+    btn.addEventListener('click', e => { e.stopPropagation(); removeToLibrary(btn.dataset.removeEx); });
+  });
+  view.querySelectorAll('[data-edit-add-day]').forEach(btn => {
+    btn.addEventListener('click', e => { e.stopPropagation(); showAddToDayPicker(btn.dataset.editAddDay); });
+  });
+  const editSortEl = view.querySelector('#edit-sortable');
+  if (editSortEl && typeof Sortable !== 'undefined') {
+    Sortable.create(editSortEl, {
+      handle: '.section-drag-handle', animation: 150, delay: 120, delayOnTouchOnly: true,
+      draggable: '.section-group', onEnd() { rebuildCatalogOrderFromDOM(); },
+    });
+    editSortEl.querySelectorAll('.exercise-sortable-inner').forEach(innerEl => {
+      Sortable.create(innerEl, {
+        group: 'edit-ex', handle: '.drag-handle', animation: 150, delay: 120, delayOnTouchOnly: true,
+        onEnd() { rebuildCatalogOrderFromDOM(); },
       });
     });
   }

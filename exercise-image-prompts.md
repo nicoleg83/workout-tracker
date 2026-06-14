@@ -403,11 +403,11 @@ NOTE: resistance band looped around the back of one knee, anchored to a rack in 
 START: working knee slightly bent, band pulling the knee forward
 END: knee fully straightened (extended) against the band, quad/VMO contracted
 
-### seated-hamstring-curl
+### lying-hamstring-curl
 ANGLE: side
-NOTE: seated leg-curl machine, shin pad resting over the lower legs, thigh pad across the lap
-START: legs extended forward, pad against lower shins, knees nearly straight
-END: legs curled down and back under the seat, knees fully bent, hamstrings contracted
+NOTE: lying face-down (prone) on a lying leg-curl machine, ankle pad resting against the back of the lower legs/achilles, thighs flat on the pad
+START: lying prone, legs straight, ankle pad against the lower calves
+END: heels curled up toward the glutes, knees fully bent, hamstrings contracted
 
 ### barbell-hip-thrust
 ANGLE: side
@@ -421,11 +421,11 @@ NOTE: vertical captain's chair core station — back against the pad, forearms r
 START: hanging upright on the station, legs straight down, shoulders pressed down
 END: both knees raised up toward the chest, hips curled slightly, lower abs contracted
 
-### kneeling-cable-crunch
+### ab-wheel-rollout
 ANGLE: side
-NOTE: kneeling in front of a high cable pulley, holding a rope attachment at the sides of the head
-START: kneeling tall, torso upright, rope held by the head, slight tension on the cable
-END: torso crunched down, elbows driven toward the thighs, spine flexed, abs contracted
+NOTE: kneeling on a mat, both hands gripping an ab wheel on the floor, core braced (anti-extension) — hips stay in line, no sagging at the low point
+START: kneeling upright, ab wheel on the floor directly under the shoulders, back flat
+END: rolled forward — arms and body extended into a near-straight line low over the floor, hips extended, core braced (not sagging)
 
 ### cable-pallof-press
 ANGLE: front 3/4
