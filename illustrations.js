@@ -26,7 +26,7 @@ const IMAGE_KEYS = new Set([
   // Day 4 — Full Body (legs/core + shoulder stability)
   'terminal-knee-extension','lying-hamstring-curl','barbell-hip-thrust',
   'captains-chair-knee-raise','ab-wheel-rollout','cable-pallof-press',
-  'cable-external-rotation','dumbbell-scaption-raise',
+  'cable-external-rotation','dumbbell-scaption-raise','side-lying-external-rotation',
 ]);
 
 function getExerciseMedia(imageKey) {
