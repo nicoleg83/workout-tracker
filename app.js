@@ -92,6 +92,26 @@ function isTimeBased(exId) {
   const ex = state.sessionExercises.find(e => e.id === exId) || state.exercises.find(e => e.id === exId);
   return ex ? /^\d+s$/.test(ex.reps_target || '') : false;
 }
+// Escape user-entered text before injecting into innerHTML (notes, etc.)
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g,
+    c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
+}
+// Bar-based exercises get a saved "bar weight" reference field.
+function usesBar(ex) { return /bar/i.test(ex?.equipment || ''); }
+function barWeightKey(ex) { return `wt_barweight_${ex.image_key || ex.id}`; }
+function getBarWeight(ex) {
+  try { return localStorage.getItem(barWeightKey(ex)) || ''; } catch (_) { return ''; }
+}
+function saveBarWeight(exId, value) {
+  const ex = state.sessionExercises.find(e => e.id === exId) || state.exercises.find(e => e.id === exId);
+  if (!ex) return;
+  try {
+    const v = String(value).trim();
+    if (v) localStorage.setItem(barWeightKey(ex), v);
+    else localStorage.removeItem(barWeightKey(ex));
+  } catch (_) {}
+}
 function buildSectionGroups(exercises) {
   const groups = [];
   const idx = {};
@@ -723,6 +743,33 @@ function addCustomExercise() {
   renderView();
 }
 
+// Append an extra set (set 4, 5, …) to an exercise for this session only —
+// the default stays at sets_target. Prefills from last session if available.
+function addSet(exerciseId) {
+  const rows = state.setLogs[exerciseId];
+  if (!rows) return;
+  const n = rows.length;
+  const prev = (state.lastLogs[exerciseId] || []).find(l => l.set_number === n + 1);
+  rows.push({ setNumber: n + 1, weight_lbs: prev ? prev.weight_lbs : null, reps: prev ? prev.reps : null, completed: false, _logId: null });
+  haptic(5);
+  renderView();
+}
+// Remove the last (extra) set. Deletes its persisted log if it was completed.
+async function removeLastSet(exerciseId) {
+  const rows = state.setLogs[exerciseId];
+  if (!rows || rows.length <= 1) return;
+  const set = rows[rows.length - 1];
+  if (set._logId) {
+    await DB.del('set_logs', set._logId);
+    const pending = await DB.getAll('pending_sync');
+    for (const p of pending) { if (p.payload?.id === set._logId) await DB.del('pending_sync', p.id); }
+    try { await Supabase.deleteRecord('set_logs', set._logId); } catch (_) {}
+  }
+  rows.pop();
+  haptic(5);
+  renderView();
+}
+
 function toggleSuperset(exerciseId) {
   const ex = state.sessionExercises.find(e => e.id === exerciseId);
   if (!ex) return;
@@ -1349,6 +1396,20 @@ function renderExerciseDetail() {
     <textarea class="notes-textarea" data-ex-id="${ex.id}" placeholder="Form cues, how it felt, adjustments…" rows="3">${note}</textarea>
   </div>`;
 
+  // Bar weight reference (only for bar-based exercises) — saved for next time.
+  let barCard = '';
+  if (usesBar(ex) && !isNoteOnly) {
+    const bw = getBarWeight(ex);
+    barCard = `<div class="card">
+      <div class="detail-section-label">Bar weight</div>
+      <div style="display:flex;align-items:center;gap:10px;">
+        <input class="set-input" type="number" inputmode="decimal" step="any" min="0" style="max-width:110px"
+          value="${esc(bw)}" placeholder="e.g. 45" onchange="saveBarWeight('${ex.id}', this.value)" />
+        <span style="font-size:12px;color:var(--text2)">lbs — saved for reference next time</span>
+      </div>
+    </div>`;
+  }
+
   let setRows = '';
   if (inActiveSession && !isSkipped && !isNoteOnly) {
     const repsCol = isTimeBased(ex.id) ? 'Secs' : 'Reps';
@@ -1360,6 +1421,10 @@ function renderExerciseDetail() {
         <div></div>
       </div>
       ${logs.map((s, i) => `<div class="set-row" data-ex-id="${ex.id}" data-set-idx="${i}">${buildSetRow(ex.id, i, s)}</div>`).join('')}
+      <div class="btn-row mt8">
+        <button class="btn btn-secondary" onclick="addSet('${ex.id}')">+ Add set</button>
+        ${logs.length > ex.sets_target ? `<button class="btn btn-secondary" onclick="removeLastSet('${ex.id}')">− Remove set</button>` : ''}
+      </div>
       <div class="btn-row mt8">
         <button class="btn btn-secondary" onclick="startRestTimer(${state.restTimer.duration})">Start Rest Timer</button>
         <button class="btn btn-danger" onclick="skipExercise('${ex.id}')">${isSkipped ? 'Unskip' : 'Skip'}</button>
@@ -1389,6 +1454,7 @@ function renderExerciseDetail() {
     </div>
     ${mediaEl}
     ${infoCard}
+    ${barCard}
     ${lastSessionCard}
     ${notesCard}
     ${setRows}`;
@@ -2022,8 +2088,20 @@ function renderProgressExercise() {
 
   const chartHtml = buildProgressChart(chartHistory, pr, range);
 
+  // Pull the note this exercise had in a given past session (stored in
+  // session.notes JSON) so you can see old form cues while training.
+  const noteFor = (sessionId) => {
+    const sess = state.sessions.find(s => s.id === sessionId);
+    if (!sess?.notes) return '';
+    try {
+      const meta = JSON.parse(sess.notes);
+      return (meta.exercises || []).find(e => e.id === exId)?.note || '';
+    } catch (_) { return ''; }
+  };
+
   const histRows = history.map(h => {
     const isPR = pr && h.date === pr.date;
+    const note = noteFor(h.sessionId);
     return `
       <div class="prog-hist-row">
         <div class="prog-hist-date">${fmtDate(h.date)}</div>
@@ -2032,7 +2110,8 @@ function renderProgressExercise() {
           <div class="prog-hist-sub">${h.sets.length} set${h.sets.length !== 1 ? 's' : ''} total</div>
         </div>
         ${isPR ? `<div class="pr-badge">🏆 PR</div>` : ''}
-      </div>`;
+      </div>
+      ${note ? `<div style="font-size:13px;color:var(--text2);background:var(--bg2);border-radius:8px;padding:8px 10px;margin:-2px 0 10px;line-height:1.45;">📝 ${esc(note)}</div>` : ''}`;
   }).join('');
 
   const mediaHtml = ex.image_key
