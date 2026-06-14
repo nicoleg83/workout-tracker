@@ -24,6 +24,7 @@ const state = {
   editDay: null,
   editDraft: null,
   editDirty: false,
+  routineDays: [],
   prCache: null,
   lastCache: null,
   historyCache: null,
@@ -215,6 +216,50 @@ async function seedExercises() {
     try { await Supabase.insertExercises(batch); } catch (_) {}
   }
   state.seeding = false;
+}
+
+// ── Workout days (data-driven, with creator mode) ────────────────────
+const DEFAULT_ROUTINE_DAYS = [
+  { label:'Day 1', name:'Push', muscles:'Chest · Shoulders · Triceps', color:'#E91E8C', sort_order:1 },
+  { label:'Day 2', name:'Pull', muscles:'Back · Biceps · Rear Delts', color:'#9C27B0', sort_order:2 },
+  { label:'Day 3', name:'Legs', muscles:'Glutes · Hamstrings · Quads', color:'#3F51B5', sort_order:3 },
+  { label:'Day 4', name:'Full Body', muscles:'Legs · Core · Shoulder Stability', color:'#00897B', sort_order:4 },
+];
+
+async function loadRoutineDays() {
+  if (navigator.onLine) {
+    try {
+      let days = await Supabase.getRoutineDays();
+      if (!days || days.length === 0) {
+        days = DEFAULT_ROUTINE_DAYS.map(d => ({ id: uuid(), archived: false, ...d }));
+        for (const d of days) { try { await Supabase.insert('routine_days', d); } catch (_) {} }
+      }
+      await DB.bulkPut('routine_days', days);
+      state.routineDays = days.filter(d => !d.archived).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+      return;
+    } catch (_) {}
+  }
+  const cached = await DB.getAll('routine_days');
+  state.routineDays = (cached.length ? cached : DEFAULT_ROUTINE_DAYS.map((d, i) => ({ id: `local-day-${i}`, archived: false, ...d })))
+    .filter(d => !d.archived).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+}
+
+function dayMeta(label) { return (state.routineDays || []).find(d => d.label === label) || null; }
+function dayName(label) { return dayMeta(label)?.name || ''; }
+
+// Create a new workout day (creator mode). Returns the new day label.
+async function createNewDay() {
+  const name = (prompt('Name your new day (e.g. "Arms", "Conditioning"):') || '').trim();
+  if (!name) return;
+  const nums = (state.routineDays || []).map(d => parseInt((d.label || '').replace(/\D/g, '')) || 0);
+  const label = `Day ${Math.max(0, ...nums) + 1}`;
+  const sort_order = (state.routineDays || []).reduce((m, d) => Math.max(m, d.sort_order || 0), 0) + 1;
+  const row = { id: uuid(), label, name, muscles: '', color: '#00897B', sort_order, archived: false };
+  state.routineDays.push(row);
+  await DB.put('routine_days', row);
+  await DB.queueSync('routine_days', 'insert', row);
+  syncIfOnline();
+  openEditDay(label); // start adding exercises from the Library
 }
 
 async function loadSessions() {
@@ -1345,11 +1390,7 @@ function renderView(direction = 'none') {
 
 // ── Home view ────────────────────────────────────────────────────
 function renderHome() {
-  const days = [
-    { day: 'Day 1', name: 'Push', muscles: 'Chest · Shoulders · Triceps', color: '#E91E8C' },
-    { day: 'Day 2', name: 'Pull', muscles: 'Back · Biceps · Rear Delts', color: '#9C27B0' },
-    { day: 'Day 3', name: 'Legs', muscles: 'Glutes · Hamstrings · Quads', color: '#3F51B5' },
-  ];
+  const days = (state.routineDays || []).map(d => ({ day: d.label, name: d.name, muscles: d.muscles || '', color: d.color }));
   const dayNameMap = Object.fromEntries(days.map(d => [d.day, d.name]));
 
   const last = state.sessions.find(isSessionFinished);
@@ -1400,7 +1441,7 @@ function renderHome() {
     <div class="page-header">
       <div style="flex:1">
         <div class="page-title">Workout Tracker</div>
-        <div class="page-subtitle">Push · Pull · Legs</div>
+        <div class="page-subtitle">${days.map(d => d.name).filter(Boolean).join(' · ') || 'Your routine'}</div>
       </div>
       <button class="logout-btn" onclick="handleLogout()" title="Sign out">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1410,7 +1451,12 @@ function renderHome() {
     </div>
     ${inProgress}
     ${lastWidget}
-    <div class="day-cards">${cards}</div>`;
+    <div class="day-cards">${cards}
+      <div class="day-card" style="display:flex;flex-direction:column;align-items:center;justify-content:center;border:1px dashed var(--border);color:var(--text3);cursor:pointer;min-height:118px;-webkit-tap-highlight-color:transparent;" onclick="createNewDay()">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        <div style="font-size:13px;font-weight:600;margin-top:6px;">New day</div>
+      </div>
+    </div>`;
 }
 
 // ── Workout view ─────────────────────────────────────────────────
@@ -1418,7 +1464,7 @@ function renderWorkout() {
   if (!state.activeSession) { return ''; }
   const exercises = currentDayExercises();
   const prog = exerciseProgress(exercises);
-  const dayNames = { 'Day 1':'Push', 'Day 2':'Pull', 'Day 3':'Legs' };
+  const dayNames = Object.fromEntries((state.routineDays || []).map(d => [d.label, d.name]));
   const groups = buildSectionGroups(exercises);
 
   let html = `
@@ -1875,7 +1921,7 @@ function renderSummary() {
   const prs = state.sessionPRCount || 0;
   const skippedCount = state.skipped.size;
   const pct = totalSets ? Math.round((completedSets/totalSets)*100) : 0;
-  const dayNames = { 'Day 1':'Push', 'Day 2':'Pull', 'Day 3':'Legs' };
+  const dayNames = Object.fromEntries((state.routineDays || []).map(d => [d.label, d.name]));
 
   return `
     <div class="page-header">
@@ -1958,7 +2004,7 @@ function renderSessionDetail() {
   const session = state.historySession;
   if (!session) return renderHistory();
 
-  const dayNames = { 'Day 1': 'Push', 'Day 2': 'Pull', 'Day 3': 'Legs' };
+  const dayNames = Object.fromEntries((state.routineDays || []).map(d => [d.label, d.name]));
   const header = `
     <div class="page-header">
       <button class="back-btn" aria-label="Back" onclick="setTab('history')">
@@ -2124,9 +2170,7 @@ function renderProgress() {
 
   const dayDefs = [
     { key: null, label: 'All' },
-    { key: 'Day 1', label: 'Push' },
-    { key: 'Day 2', label: 'Pull' },
-    { key: 'Day 3', label: 'Legs' },
+    ...(state.routineDays || []).map(d => ({ key: d.label, label: d.name || d.label })),
   ];
   const chips = dayDefs.map(d =>
     `<button class="prog-chip ${state.progressDay === d.key ? 'active' : ''}" data-prog-day="${d.key || ''}">${d.label}</button>`
@@ -2136,7 +2180,7 @@ function renderProgress() {
   if (state.progressDay) exercises = exercises.filter(e => e.day === state.progressDay);
   exercises.sort((a, b) => a.sort_order - b.sort_order);
 
-  const dayNames = { 'Day 1': 'Push', 'Day 2': 'Pull', 'Day 3': 'Legs' };
+  const dayNames = Object.fromEntries((state.routineDays || []).map(d => [d.label, d.name]));
   const grouped = {};
   const dayOrder = [];
   for (const ex of exercises) {
@@ -2436,7 +2480,7 @@ function renderHistory() {
       </div>`;
   }
 
-  const dayNames = { 'Day 1': 'Push', 'Day 2': 'Pull', 'Day 3': 'Legs' };
+  const dayNames = Object.fromEntries((state.routineDays || []).map(d => [d.label, d.name]));
   const cards = finished.map(s => `
     <div class="session-card" data-session-id="${s.id}">
       <div class="session-card-header">
@@ -2850,6 +2894,7 @@ async function finishAuth(session) {
   document.getElementById('tab-bar').style.display = '';
   document.getElementById('main-view').innerHTML = `<div class="loading"><div class="spinner"></div><div>Loading…</div></div>`;
   await loadExercises(); // Must run before syncIfOnline so exercises exist in Supabase for local-* remap
+  await loadRoutineDays();
   await syncIfOnline();
   await loadSessions();
   await loadProgressData();
@@ -3013,6 +3058,7 @@ async function init() {
   document.getElementById('main-view').innerHTML = `<div class="loading"><div class="spinner"></div><div>Loading…</div></div>`;
 
   await loadExercises(); // Must run before syncIfOnline so exercises exist in Supabase for local-* remap
+  await loadRoutineDays();
   await syncIfOnline();
   await loadSessions();
   await loadProgressData();

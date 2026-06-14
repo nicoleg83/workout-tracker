@@ -1,6 +1,6 @@
 const DB = (() => {
   const DB_NAME = 'workout-tracker';
-  const DB_VERSION = 1;
+  const DB_VERSION = 2;
   let _db = null;
 
   function open() {
@@ -25,6 +25,9 @@ const DB = (() => {
         }
         if (!db.objectStoreNames.contains('pending_sync')) {
           db.createObjectStore('pending_sync', { keyPath: 'id' });
+        }
+        if (!db.objectStoreNames.contains('routine_days')) {
+          db.createObjectStore('routine_days', { keyPath: 'id' });
         }
       };
       req.onsuccess = e => { _db = e.target.result; resolve(_db); };

@@ -103,6 +103,10 @@ const Supabase = (() => {
     return restReq('/exercises?select=*&order=day,sort_order');
   }
 
+  async function getRoutineDays() {
+    return restReq('/routine_days?select=*&order=sort_order');
+  }
+
   async function insertExercises(batch) {
     return restReq('/exercises', {
       method: 'POST',
@@ -153,7 +157,7 @@ async function insert(table, payload) {
 
   return {
     restoreSession, signIn, signUp, signOut, getUser,
-    getExercises, insertExercises,
+    getExercises, insertExercises, getRoutineDays,
     getSessions, getSetLogs, getAllSetLogs, deleteSetLogsBySession,
     insert, update, deleteRecord,
   };
