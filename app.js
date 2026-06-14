@@ -25,6 +25,8 @@ const state = {
   editDraft: null,
   editDirty: false,
   routineDays: [],
+  librarySearch: '',
+  libraryFilter: null,
   prCache: null,
   lastCache: null,
   historyCache: null,
@@ -1297,20 +1299,27 @@ function libRow(ex) {
 function renderLibrary() {
   const q = (state.librarySearch || '').toLowerCase().trim();
   const all = state.exercises.filter(e => !e._custom);
-  const match = e => !q || e.name.toLowerCase().includes(q) || (e.equipment || '').toLowerCase().includes(q);
   const dayLabels = (state.routineDays || []).map(d => d.label);
-  const extra = [...new Set(all.map(e => e.day))].filter(d => !dayLabels.includes(d) && d !== 'Library');
-  const order = [...dayLabels, 'Library', ...extra];
+  const f = state.libraryFilter || null; // null = All, a day label, or 'Other'
+  const match = e => {
+    if (q && !(e.name.toLowerCase().includes(q) || (e.equipment || '').toLowerCase().includes(q))) return false;
+    if (!f) return true;
+    if (f === 'Other') return !dayLabels.includes(e.day);
+    return e.day === f;
+  };
+  const list = all.filter(match).sort((a, b) => a.name.localeCompare(b.name));
 
-  let body = '';
-  for (const day of order) {
-    const exs = all.filter(e => e.day === day && match(e)).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
-    if (!exs.length) continue;
-    const title = day === 'Library' ? 'Library (not in any day)' : (dayName(day) ? `${day} — ${dayName(day)}` : day);
-    body += `<div class="section-label" style="margin-top:16px">${esc(title)} <span style="color:var(--text3);font-weight:500">· ${exs.length}</span></div>`;
-    body += exs.map(libRow).join('');
-  }
-  if (!body) body = `<div class="empty"><div class="empty-icon">🔍</div><div class="empty-body">No exercises match “${esc(state.librarySearch || '')}”.</div></div>`;
+  const chip = (key, label) =>
+    `<button class="prog-chip ${(state.libraryFilter || null) === key ? 'active' : ''}" data-lib-filter="${key == null ? '' : esc(key)}">${esc(label)}</button>`;
+  const chips = [
+    chip(null, 'All'),
+    ...(state.routineDays || []).map(d => chip(d.label, d.name || d.label)),
+    chip('Other', 'Other'),
+  ].join('');
+
+  const body = list.length
+    ? list.map(libRow).join('')
+    : `<div class="empty"><div class="empty-icon">🔍</div><div class="empty-body">No exercises match.</div></div>`;
 
   return `
     <div class="page-header">
@@ -1320,6 +1329,7 @@ function renderLibrary() {
       <div style="flex:1"><div class="page-title" style="font-size:18px">Exercise Library</div></div>
     </div>
     <input id="lib-search" class="set-input" style="width:100%;box-sizing:border-box;margin-bottom:10px" placeholder="Search exercises…" value="${esc(state.librarySearch || '')}" />
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">${chips}</div>
     <button class="add-exercise-btn" onclick="navigateTo('create-exercise', {}, 'forward')">+ Create new exercise</button>
     ${body}`;
 }
@@ -2898,6 +2908,9 @@ function bindViewEvents() {
       if (s) { s.focus(); const v = s.value; s.setSelectionRange(v.length, v.length); }
     });
   }
+  view.querySelectorAll('[data-lib-filter]').forEach(btn => {
+    btn.addEventListener('click', () => { state.libraryFilter = btn.dataset.libFilter || null; renderView(); });
+  });
   view.querySelectorAll('[data-lib-ex]').forEach(row => {
     row.addEventListener('click', () => showMoveToDayPicker(row.dataset.libEx));
   });
