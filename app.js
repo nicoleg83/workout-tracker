@@ -118,6 +118,32 @@ function saveBarWeight(exId, value) {
     else localStorage.removeItem(barWeightKey(ex));
   } catch (_) {}
 }
+
+// Assisted exercises (e.g. assisted pull-ups): LOWER weight = better, so PRs
+// and "best set" invert. Auto-detected from name/equipment, override saved locally.
+function assistedKey(ex) { return `wt_assisted_${ex.image_key || ex.id}`; }
+function isAssisted(ex) {
+  if (!ex) return false;
+  try {
+    const o = localStorage.getItem(assistedKey(ex));
+    if (o === '1') return true;
+    if (o === '0') return false;
+  } catch (_) {}
+  return /assist/i.test(`${ex.name || ''} ${ex.equipment || ''}`);
+}
+function isAssistedById(exId) {
+  return isAssisted(state.exercises.find(e => e.id === exId) || state.sessionExercises.find(e => e.id === exId));
+}
+function setAssistedOverride(exId, value) {
+  const ex = state.sessionExercises.find(e => e.id === exId) || state.exercises.find(e => e.id === exId);
+  if (!ex) return;
+  try { localStorage.setItem(assistedKey(ex), value ? '1' : '0'); } catch (_) {}
+}
+function toggleAssisted(exId) {
+  setAssistedOverride(exId, !isAssistedById(exId));
+  state.progressLoaded = false; // recompute PRs/best-sets with the new direction
+  renderView();
+}
 function buildSectionGroups(exercises) {
   // Group by section. An empty section ('') is a heading-less flat list — this
   // is where ungrouped exercises land so they "merge into one long list."
@@ -370,11 +396,12 @@ async function loadProgressData() {
   state.historyCache = {};
 
   for (const [exId, sessMap] of Object.entries(byEx)) {
+    const assisted = isAssistedById(exId); // lower weight is better
     const history = Object.entries(sessMap)
       .map(([sid, { date, sets }]) => {
         const best = sets.reduce((b, s) => {
           if (!b) return s;
-          if (s.weight_lbs > b.weight_lbs) return s;
+          if (assisted ? s.weight_lbs < b.weight_lbs : s.weight_lbs > b.weight_lbs) return s;
           if (s.weight_lbs === b.weight_lbs && (s.reps || 0) > (b.reps || 0)) return s;
           return b;
         }, null);
@@ -385,7 +412,7 @@ async function loadProgressData() {
     if (history.length > 0) state.lastCache[exId] = history[0];
     let pr = null;
     for (const sess of history) {
-      if (!pr || sess.bestSet.weight_lbs > pr.weight_lbs) {
+      if (!pr || (assisted ? sess.bestSet.weight_lbs < pr.weight_lbs : sess.bestSet.weight_lbs > pr.weight_lbs)) {
         pr = { weight_lbs: sess.bestSet.weight_lbs, reps: sess.bestSet.reps, date: sess.date };
       }
     }
@@ -399,7 +426,8 @@ function checkPR(exerciseId, weight, reps) {
   const w = parseFloat(weight);
   if (!w) return;
   const pr = state.prCache[exerciseId];
-  if (!pr || w > pr.weight_lbs) {
+  const assisted = isAssistedById(exerciseId);
+  if (!pr || (assisted ? w < pr.weight_lbs : w > pr.weight_lbs)) {
     state.prCache[exerciseId] = { weight_lbs: w, reps: parseInt(reps) || 0, date: today() };
     const ex = state.sessionExercises.find(e => e.id === exerciseId)
             || state.exercises.find(e => e.id === exerciseId);
@@ -1398,6 +1426,10 @@ function renderCreateExercise() {
       ${field('Sets (default 3)', 'ne-sets', 'type="number" min="1" value="3"')}
       ${field('Reps / time', 'ne-reps', '', 'e.g. 12 or 30s')}
       ${field('Image key (optional)', 'ne-image', '', 'leave blank for an illustration')}
+      <label style="display:flex;align-items:center;gap:10px;font-size:14px;cursor:pointer">
+        <input id="ne-assisted" type="checkbox" style="width:18px;height:18px" />
+        Assisted (lower weight = better)
+      </label>
     </div>
     <button class="btn btn-primary" onclick="submitNewExercise()">Create exercise</button>
     <div style="font-size:12px;color:var(--text3);margin-top:10px;text-align:center">It lands in your Library — add it to a day from there.</div>`;
@@ -1416,9 +1448,46 @@ function submitNewExercise() {
   state.exercises.push(ex);
   DB.put('exercises', ex);
   DB.queueSync('exercises', 'insert', toExerciseRow(ex));
+  if (document.getElementById('ne-assisted')?.checked) setAssistedOverride(ex.id, true);
   syncIfOnline();
   toast('Created — in your Library');
   navigateTo('library', {}, 'back');
+}
+
+// ── Weekly schedule (in-app plan; no device reminders) ───────────────
+const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+function getSchedule() {
+  try { return JSON.parse(localStorage.getItem('wt_schedule') || '{}'); } catch (_) { return {}; }
+}
+function setScheduleDay(idx, label) {
+  const s = getSchedule();
+  s[idx] = label;
+  try { localStorage.setItem('wt_schedule', JSON.stringify(s)); } catch (_) {}
+}
+
+function renderSchedule() {
+  const s = getSchedule();
+  const choices = ['Rest', ...(state.routineDays || []).map(d => d.label)];
+  const rows = WEEKDAYS.map((wd, i) => {
+    const cur = s[i] || 'Rest';
+    const opts = choices.map(v =>
+      `<option value="${esc(v)}" ${cur === v ? 'selected' : ''}>${v === 'Rest' ? 'Rest' : esc(`${v} — ${dayName(v) || ''}`)}</option>`).join('');
+    return `<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 0;border-bottom:1px solid var(--border)">
+      <div style="font-weight:600">${wd}</div>
+      <select class="set-input" style="width:auto;min-width:150px" data-sched-day="${i}">${opts}</select>
+    </div>`;
+  }).join('');
+  return `
+    <div class="page-header">
+      <button class="back-btn" aria-label="Back" onclick="setTab('home')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+      </button>
+      <div style="flex:1">
+        <div class="page-title" style="font-size:18px">Weekly Schedule</div>
+        <div class="page-subtitle">Your plan at a glance — phone reminders aren't sent</div>
+      </div>
+    </div>
+    <div class="card">${rows}</div>`;
 }
 
 function saveExerciseNote(exerciseId, note) {
@@ -1520,6 +1589,7 @@ function renderView(direction = 'none') {
     case 'edit-day':          el.innerHTML = renderEditDay(); break;
     case 'library':           el.innerHTML = renderLibrary(); break;
     case 'create-exercise':   el.innerHTML = renderCreateExercise(); break;
+    case 'schedule':          el.innerHTML = renderSchedule(); break;
     default:                  el.innerHTML = renderHome();
   }
   el.scrollTop = 0;
@@ -1552,6 +1622,19 @@ function renderHome() {
         <span>${daysAgo(last.date)} · ${fmtDate(last.date)}</span>
       </div>
     </div>` : '';
+
+  // Today's plan from the weekly schedule
+  const schedToday = getSchedule()[new Date().getDay()];
+  let todayWidget = '';
+  if (schedToday && schedToday !== 'Rest' && dayMeta(schedToday)) {
+    todayWidget = `<div class="card mb16" style="border-color:var(--pink)">
+      <div style="font-size:12px;color:var(--pink);font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;">Today's plan</div>
+      <div style="font-size:16px;font-weight:700;margin-bottom:12px;">${schedToday} — ${esc(dayName(schedToday))}</div>
+      <button class="day-card-start" data-day-start="${schedToday}" style="width:100%">Start Workout</button>
+    </div>`;
+  } else if (schedToday === 'Rest') {
+    todayWidget = `<div class="card mb16"><div style="font-size:13px;color:var(--text2)">Today's plan: Rest day 🌙</div></div>`;
+  }
 
   // Show resume card if actively in a workout OR if a saved-but-exited session exists
   const savedId = localStorage.getItem('activeWorkoutSessionId');
@@ -1594,6 +1677,7 @@ function renderHome() {
       </button>
     </div>
     ${inProgress}
+    ${todayWidget}
     ${lastWidget}
     <div class="day-cards">${cards}
       <div class="day-card" style="display:flex;flex-direction:column;align-items:center;justify-content:center;border:1px dashed var(--border);color:var(--text3);cursor:pointer;min-height:118px;-webkit-tap-highlight-color:transparent;" onclick="createNewDay()">
@@ -1601,7 +1685,8 @@ function renderHome() {
         <div style="font-size:13px;font-weight:600;margin-top:6px;">New day</div>
       </div>
     </div>
-    <button class="add-exercise-btn" style="margin-top:14px" onclick="navigateTo('library', {}, 'forward')">⊞ Exercise Library</button>`;
+    <button class="add-exercise-btn" style="margin-top:14px" onclick="navigateTo('library', {}, 'forward')">⊞ Exercise Library</button>
+    <button class="add-exercise-btn" style="margin-top:8px" onclick="navigateTo('schedule', {}, 'forward')">📅 Weekly Schedule</button>`;
 }
 
 // ── Workout view ─────────────────────────────────────────────────
@@ -1872,6 +1957,18 @@ function renderExerciseDetail() {
     </div>`;
   }
 
+  let assistedCard = '';
+  if (!isNoteOnly) {
+    const on = isAssisted(ex);
+    assistedCard = `<div class="card" style="display:flex;align-items:center;justify-content:space-between;gap:10px">
+      <div>
+        <div style="font-weight:700;font-size:14px">Assisted exercise</div>
+        <div style="font-size:12px;color:var(--text2)">Lower weight counts as a new record</div>
+      </div>
+      <button class="btn ${on ? 'btn-primary' : 'btn-secondary'}" style="width:auto;padding:8px 16px;white-space:nowrap" onclick="toggleAssisted('${ex.id}')">${on ? 'On' : 'Off'}</button>
+    </div>`;
+  }
+
   let setRows = '';
   if (inActiveSession && !isSkipped && !isNoteOnly) {
     const repsCol = isTimeBased(ex.id) ? 'Secs' : 'Reps';
@@ -1917,6 +2014,7 @@ function renderExerciseDetail() {
     ${mediaEl}
     ${infoCard}
     ${barCard}
+    ${assistedCard}
     ${lastSessionCard}
     ${notesCard}
     ${setRows}`;
@@ -2910,6 +3008,9 @@ function bindViewEvents() {
   }
   view.querySelectorAll('[data-lib-filter]').forEach(btn => {
     btn.addEventListener('click', () => { state.libraryFilter = btn.dataset.libFilter || null; renderView(); });
+  });
+  view.querySelectorAll('select[data-sched-day]').forEach(sel => {
+    sel.addEventListener('change', () => setScheduleDay(parseInt(sel.dataset.schedDay), sel.value));
   });
   view.querySelectorAll('[data-lib-ex]').forEach(row => {
     row.addEventListener('click', () => showMoveToDayPicker(row.dataset.libEx));
