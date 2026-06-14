@@ -23,6 +23,10 @@ const IMAGE_KEYS = new Set([
   'bulgarian-split-squat','kettlebell-sumo-squat-to-press','jump-squats',
   'cable-glute-kickback','leg-press','hip-abduction','hip-adduction',
   'lateral-band-walk','groucho-walk','dumbbell-glute-bridge','wall-sit',
+  // Day 4 — Full Body (legs/core + shoulder stability)
+  'terminal-knee-extension','lying-hamstring-curl','barbell-hip-thrust',
+  'captains-chair-knee-raise','ab-wheel-rollout','cable-pallof-press',
+  'cable-external-rotation','dumbbell-scaption-raise',
 ]);
 
 function getExerciseMedia(imageKey) {
