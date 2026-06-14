@@ -1279,6 +1279,138 @@ function showAddToDayPicker(day) {
   });
 }
 
+// ── Library browser + create exercise (Phase 2) ──────────────────────
+function libRow(ex) {
+  const thumb = IMAGE_KEYS.has(ex.image_key)
+    ? `<img class="exercise-thumb-img" src="icons/exercises/${ex.image_key}.webp" alt="" loading="lazy" />`
+    : (ILLUSTRATIONS[ex.image_key] || ILLUSTRATIONS['_placeholder']).replace(/viewBox="[^"]*"/, 'viewBox="0 0 120 160"');
+  return `<div class="exercise-row" data-lib-ex="${ex.id}">
+    <div class="exercise-row-thumb">${thumb}</div>
+    <div class="exercise-row-info">
+      <div class="exercise-row-name">${esc(ex.name)}</div>
+      <div class="exercise-row-meta">${ex.sets_target}×${esc(ex.reps_target || '')}${ex.equipment ? ' · ' + esc(ex.equipment) : ''}</div>
+    </div>
+    <div class="exercise-row-end"><span style="color:var(--text3);font-size:18px">›</span></div>
+  </div>`;
+}
+
+function renderLibrary() {
+  const q = (state.librarySearch || '').toLowerCase().trim();
+  const all = state.exercises.filter(e => !e._custom);
+  const match = e => !q || e.name.toLowerCase().includes(q) || (e.equipment || '').toLowerCase().includes(q);
+  const dayLabels = (state.routineDays || []).map(d => d.label);
+  const extra = [...new Set(all.map(e => e.day))].filter(d => !dayLabels.includes(d) && d !== 'Library');
+  const order = [...dayLabels, 'Library', ...extra];
+
+  let body = '';
+  for (const day of order) {
+    const exs = all.filter(e => e.day === day && match(e)).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+    if (!exs.length) continue;
+    const title = day === 'Library' ? 'Library (not in any day)' : (dayName(day) ? `${day} — ${dayName(day)}` : day);
+    body += `<div class="section-label" style="margin-top:16px">${esc(title)} <span style="color:var(--text3);font-weight:500">· ${exs.length}</span></div>`;
+    body += exs.map(libRow).join('');
+  }
+  if (!body) body = `<div class="empty"><div class="empty-icon">🔍</div><div class="empty-body">No exercises match “${esc(state.librarySearch || '')}”.</div></div>`;
+
+  return `
+    <div class="page-header">
+      <button class="back-btn" aria-label="Back" onclick="setTab('home')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+      </button>
+      <div style="flex:1"><div class="page-title" style="font-size:18px">Exercise Library</div></div>
+    </div>
+    <input id="lib-search" class="set-input" style="width:100%;box-sizing:border-box;margin-bottom:10px" placeholder="Search exercises…" value="${esc(state.librarySearch || '')}" />
+    <button class="add-exercise-btn" onclick="navigateTo('create-exercise', {}, 'forward')">+ Create new exercise</button>
+    ${body}`;
+}
+
+// Action sheet: move a library/catalog exercise into a day (or back to Library).
+function showMoveToDayPicker(exId) {
+  const ex = state.exercises.find(e => e.id === exId);
+  if (!ex) return;
+  const dayOpts = (state.routineDays || [])
+    .filter(d => d.label !== ex.day)
+    .map(d => `<button class="group-sheet-option" data-move-day="${esc(d.label)}"><div><span class="group-sheet-label">Add to ${esc(d.label)} — ${esc(d.name || '')}</span></div></button>`)
+    .join('');
+  const libOpt = ex.day !== 'Library'
+    ? `<button class="group-sheet-option" data-move-day="Library"><div><span class="group-sheet-label">Move to Library</span><span class="group-sheet-meta">Remove from ${esc(ex.day)} (keeps history)</span></div></button>`
+    : '';
+  const sheet = document.createElement('div');
+  sheet.id = 'group-picker-sheet';
+  sheet.innerHTML = `
+    <div class="group-picker-backdrop"></div>
+    <div class="group-picker-panel">
+      <div class="group-picker-handle"></div>
+      <div class="group-picker-title">${esc(ex.name)}</div>
+      ${dayOpts}${libOpt}
+      <button class="group-picker-cancel">Cancel</button>
+    </div>`;
+  document.body.appendChild(sheet);
+  requestAnimationFrame(() => sheet.querySelector('.group-picker-panel').classList.add('open'));
+  sheet.querySelector('.group-picker-backdrop').addEventListener('click', closeGroupPicker);
+  sheet.querySelector('.group-picker-cancel').addEventListener('click', closeGroupPicker);
+  sheet.querySelectorAll('[data-move-day]').forEach(btn => {
+    btn.addEventListener('click', () => { closeGroupPicker(); moveExerciseToDay(exId, btn.dataset.moveDay); });
+  });
+}
+
+// Library actions persist directly (explicit, one-off — not the edit-day draft).
+function moveExerciseToDay(exId, day) {
+  const ex = state.exercises.find(e => e.id === exId);
+  if (!ex) return;
+  if (day === 'Library') {
+    ex.day = 'Library'; ex.section = ''; ex.superset_group = null;
+  } else {
+    const maxOrder = state.exercises.filter(e => e.day === day).reduce((m, e) => Math.max(m, e.sort_order || 0), 0);
+    ex.day = day; ex.section = ''; ex.superset_group = null; ex.sort_order = maxOrder + 1;
+  }
+  persistExercise(ex);
+  toast(day === 'Library' ? 'Moved to Library' : `Added to ${day}`);
+  renderView();
+}
+
+function renderCreateExercise() {
+  const field = (label, id, attrs = '', ph = '') =>
+    `<div style="margin-bottom:12px">
+      <div class="detail-section-label">${label}</div>
+      <input id="${id}" class="set-input" style="width:100%;box-sizing:border-box" placeholder="${ph}" ${attrs} />
+    </div>`;
+  return `
+    <div class="page-header">
+      <button class="back-btn" aria-label="Back" onclick="navigateTo('library', {}, 'back')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+      </button>
+      <div style="flex:1"><div class="page-title" style="font-size:18px">New exercise</div></div>
+    </div>
+    <div class="card">
+      ${field('Name', 'ne-name', '', 'e.g. Cable Crunch')}
+      ${field('Equipment', 'ne-equipment', '', 'e.g. Cable Machine')}
+      ${field('Sets (default 3)', 'ne-sets', 'type="number" min="1" value="3"')}
+      ${field('Reps / time', 'ne-reps', '', 'e.g. 12 or 30s')}
+      ${field('Image key (optional)', 'ne-image', '', 'leave blank for an illustration')}
+    </div>
+    <button class="btn btn-primary" onclick="submitNewExercise()">Create exercise</button>
+    <div style="font-size:12px;color:var(--text3);margin-top:10px;text-align:center">It lands in your Library — add it to a day from there.</div>`;
+}
+
+function submitNewExercise() {
+  const val = id => (document.getElementById(id)?.value || '').trim();
+  const name = val('ne-name');
+  if (!name) { toast('Name is required', 'error'); return; }
+  const ex = {
+    id: uuid(), day: 'Library', section: '', name,
+    equipment: val('ne-equipment'), weight_range: '',
+    sets_target: parseInt(val('ne-sets')) || 3, reps_target: val('ne-reps') || '10',
+    instructions: [], image_key: val('ne-image') || null, superset_group: null, sort_order: 0,
+  };
+  state.exercises.push(ex);
+  DB.put('exercises', ex);
+  DB.queueSync('exercises', 'insert', toExerciseRow(ex));
+  syncIfOnline();
+  toast('Created — in your Library');
+  navigateTo('library', {}, 'back');
+}
+
 function saveExerciseNote(exerciseId, note) {
   state.exerciseNotes[exerciseId] = note;
 }
@@ -1376,6 +1508,8 @@ function renderView(direction = 'none') {
     case 'progress-exercise': el.innerHTML = renderProgressExercise(); break;
     case 'superset-detail':   el.innerHTML = renderSupersetDetail(); break;
     case 'edit-day':          el.innerHTML = renderEditDay(); break;
+    case 'library':           el.innerHTML = renderLibrary(); break;
+    case 'create-exercise':   el.innerHTML = renderCreateExercise(); break;
     default:                  el.innerHTML = renderHome();
   }
   el.scrollTop = 0;
@@ -1456,7 +1590,8 @@ function renderHome() {
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
         <div style="font-size:13px;font-weight:600;margin-top:6px;">New day</div>
       </div>
-    </div>`;
+    </div>
+    <button class="add-exercise-btn" style="margin-top:14px" onclick="navigateTo('library', {}, 'forward')">⊞ Exercise Library</button>`;
 }
 
 // ── Workout view ─────────────────────────────────────────────────
@@ -2753,6 +2888,20 @@ function bindViewEvents() {
   view.querySelectorAll('[data-edit-add-day]').forEach(btn => {
     btn.addEventListener('click', e => { e.stopPropagation(); showAddToDayPicker(btn.dataset.editAddDay); });
   });
+  // ── Library browser ──
+  const libSearch = view.querySelector('#lib-search');
+  if (libSearch) {
+    libSearch.addEventListener('input', e => {
+      state.librarySearch = e.target.value;
+      renderView();
+      const s = document.getElementById('lib-search');
+      if (s) { s.focus(); const v = s.value; s.setSelectionRange(v.length, v.length); }
+    });
+  }
+  view.querySelectorAll('[data-lib-ex]').forEach(row => {
+    row.addEventListener('click', () => showMoveToDayPicker(row.dataset.libEx));
+  });
+
   const editSortEl = view.querySelector('#edit-sortable');
   if (editSortEl && typeof Sortable !== 'undefined') {
     Sortable.create(editSortEl, {
