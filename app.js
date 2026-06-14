@@ -290,6 +290,58 @@ async function createNewDay() {
   openEditDay(label); // start adding exercises from the Library
 }
 
+async function persistRoutineDay(row) {
+  await DB.put('routine_days', row);
+  await DB.queueSync('routine_days', 'update', row);
+  syncIfOnline();
+}
+
+// Rename a day (changes the display name; the internal label/key is unchanged).
+async function renameDay(label) {
+  const d = dayMeta(label);
+  if (!d) return;
+  const name = (prompt('Rename this day:', d.name || '') || '').trim();
+  if (!name || name === d.name) return;
+  d.name = name;
+  await persistRoutineDay(d);
+  renderView();
+}
+
+// Persist a drag-reorder of the home day cards into routine_days.sort_order.
+function reorderDaysFromDOM() {
+  const view = document.getElementById('main-view');
+  if (!view) return;
+  const labels = [...view.querySelectorAll('.day-cards .day-card[data-day]')].map(el => el.dataset.day);
+  labels.forEach((label, i) => {
+    const d = dayMeta(label);
+    if (d && d.sort_order !== i + 1) { d.sort_order = i + 1; persistRoutineDay(d); }
+  });
+  state.routineDays.sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+  renderView();
+}
+
+// Reset all logged history + PRs for one exercise (deletes its set_logs everywhere).
+async function deleteExerciseHistory(exId) {
+  const ex = state.exercises.find(e => e.id === exId);
+  const name = ex?.name || 'this exercise';
+  if (!confirm(`Reset all history & PRs for "${name}"? This permanently deletes every logged set for it and can't be undone.`)) return;
+  const logs = await DB.getAll('set_logs', 'exercise_id', exId);
+  for (const l of logs) {
+    await DB.del('set_logs', l.id);
+    try { await Supabase.deleteRecord('set_logs', l.id); } catch (_) {}
+  }
+  const ids = new Set(logs.map(l => l.id));
+  const pending = await DB.getAll('pending_sync');
+  for (const p of pending) { if (p.payload && ids.has(p.payload.id)) await DB.del('pending_sync', p.id); }
+  if (state.prCache) delete state.prCache[exId];
+  if (state.historyCache) delete state.historyCache[exId];
+  if (state.lastCache) delete state.lastCache[exId];
+  state.progressLoaded = false;
+  await loadProgressData();
+  toast('History reset');
+  navigateTo('progress', {}, 'back');
+}
+
 async function loadSessions() {
   if (navigator.onLine) {
     try {
@@ -1233,7 +1285,12 @@ function renderEditDay() {
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
       </button>
       <div style="flex:1">
-        <div class="page-title" style="font-size:18px">Edit ${esc(day)}</div>
+        <div class="page-title" style="font-size:18px;display:flex;align-items:center;gap:8px">
+          ${esc(dayName(day) || day)}
+          <button aria-label="Rename day" onclick="renameDay('${day}')" style="background:none;border:none;color:var(--text3);padding:2px;cursor:pointer;-webkit-tap-highlight-color:transparent;">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+          </button>
+        </div>
         <div class="page-subtitle">Drag to reorder · tap Save to keep changes</div>
       </div>
     </div>
@@ -1651,14 +1708,16 @@ function renderHome() {
     const count = state.exercises.filter(e => e.day === day).length;
     const isResumable = resumableSession?.day === day;
     return `<div class="day-card" data-day="${day}">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start;">
-        <div class="day-card-label">${day}</div>
-        <button class="day-card-edit" data-edit-day="${day}" aria-label="Edit ${day}" style="background:none;border:none;color:var(--text3);padding:4px;margin:-4px -4px 0 0;cursor:pointer;-webkit-tap-highlight-color:transparent;">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+        <div style="display:flex;align-items:center;gap:8px;min-width:0;">
+          <span class="day-drag-handle" style="cursor:grab;color:var(--text3);font-size:14px;-webkit-tap-highlight-color:transparent;">⠿</span>
+          <div class="day-card-name" style="margin:0">${esc(name || day)}</div>
+        </div>
+        <button class="day-card-edit" data-edit-day="${day}" aria-label="Edit ${esc(name || day)}" style="background:none;border:none;color:var(--text3);padding:4px;cursor:pointer;-webkit-tap-highlight-color:transparent;flex-shrink:0;">
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
         </button>
       </div>
-      <div class="day-card-name">${name}</div>
-      <div class="day-card-meta">${muscles} · ${count} exercises</div>
+      <div class="day-card-meta">${esc(muscles)} · ${count} exercises</div>
       <button class="day-card-start" data-day-start="${day}">${isResumable ? 'Resume Workout' : 'Start Workout'}</button>
     </div>`;
   }).join('');
@@ -1680,7 +1739,7 @@ function renderHome() {
     ${todayWidget}
     ${lastWidget}
     <div class="day-cards">${cards}
-      <div class="day-card" style="display:flex;flex-direction:column;align-items:center;justify-content:center;border:1px dashed var(--border);color:var(--text3);cursor:pointer;min-height:118px;-webkit-tap-highlight-color:transparent;" onclick="createNewDay()">
+      <div class="day-card" data-newday="1" style="display:flex;flex-direction:column;align-items:center;justify-content:center;border:1px dashed var(--border);color:var(--text3);cursor:pointer;min-height:118px;-webkit-tap-highlight-color:transparent;" onclick="createNewDay()">
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
         <div style="font-size:13px;font-weight:600;margin-top:6px;">New day</div>
       </div>
@@ -2696,7 +2755,8 @@ function renderProgressExercise() {
     ${prBar}
     ${chartHtml}
     <div class="section-label" style="margin-top:16px">Session history</div>
-    ${histRows || `<div class="empty"><div class="empty-icon">📋</div><div class="empty-body">No sessions yet.</div></div>`}`;
+    ${histRows || `<div class="empty"><div class="empty-icon">📋</div><div class="empty-body">No sessions yet.</div></div>`}
+    ${history.length ? `<button class="btn btn-danger" style="margin-top:20px" onclick="deleteExerciseHistory('${exId}')">Reset history &amp; PRs</button>` : ''}`;
 }
 
 // Returns true if a session should appear in history.
@@ -2996,6 +3056,16 @@ function bindViewEvents() {
   view.querySelectorAll('[data-edit-add-day]').forEach(btn => {
     btn.addEventListener('click', e => { e.stopPropagation(); showAddToDayPicker(btn.dataset.editAddDay); });
   });
+  // ── Home: drag-reorder day cards ──
+  const dayCardsEl = view.querySelector('.day-cards');
+  if (dayCardsEl && typeof Sortable !== 'undefined') {
+    Sortable.create(dayCardsEl, {
+      handle: '.day-drag-handle', animation: 150, delay: 120, delayOnTouchOnly: true,
+      draggable: '.day-card', filter: '[data-newday]',
+      onEnd() { reorderDaysFromDOM(); },
+    });
+  }
+
   // ── Library browser ──
   const libSearch = view.querySelector('#lib-search');
   if (libSearch) {

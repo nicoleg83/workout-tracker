@@ -646,6 +646,15 @@ body {
 }
 #sync-dot.pending { background: var(--gold); animation: pulse 1s ease-in-out infinite; }
 #sync-dot.offline { background: var(--text3); }
+
+/* iOS standalone PWA: env(safe-area-inset-top) can report 0 even on notched /
+   Dynamic Island devices, leaving the header text and sync dot under the notch.
+   Floor the top offsets so they always clear it. Scoped to the installed app so
+   the in-browser/desktop layout is unaffected. */
+@media (display-mode: standalone) {
+  .view { padding-top: max(calc(env(safe-area-inset-top, 0px) + 20px), 60px); }
+  #sync-dot { top: max(calc(env(safe-area-inset-top, 0px) + 14px), 54px); }
+}
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
 
 /* ── Workout progress bar ── */
