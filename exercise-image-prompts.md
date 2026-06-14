@@ -391,6 +391,68 @@ END: same position — this is a static hold, show the squeeze position with bal
 
 ---
 
+## DAY 4 — Full Body (Legs / Core + Shoulder Stability)
+
+> Knee-friendly / runner focus. Only the 9 exercises below need new images —
+> the rest of Day 4 reuses existing images: romanian-deadlift, dumbbell-glute-bridge,
+> dumbbell-step-up, wall-sit, single-leg-deadlift, standing-calf-raises, lateral-band-walk.
+
+### terminal-knee-extension
+ANGLE: side
+NOTE: resistance band looped around the back of one knee, anchored to a rack in front of her at knee height; standing, weight on the working leg
+START: working knee slightly bent, band pulling the knee forward
+END: knee fully straightened (extended) against the band, quad/VMO contracted
+
+### seated-hamstring-curl
+ANGLE: side
+NOTE: seated leg-curl machine, shin pad resting over the lower legs, thigh pad across the lap
+START: legs extended forward, pad against lower shins, knees nearly straight
+END: legs curled down and back under the seat, knees fully bent, hamstrings contracted
+
+### barbell-hip-thrust
+ANGLE: side
+NOTE: upper back and shoulders resting on a flat bench, padded barbell across the hips, feet flat on floor
+START: hips lowered toward the floor, knees bent ~90 degrees, bar low
+END: hips fully extended into a tabletop (flat from knees to shoulders), glutes squeezed, bar raised
+
+### captains-chair-knee-raise
+ANGLE: front 3/4
+NOTE: vertical captain's chair core station — back against the pad, forearms resting on the parallel arm pads, body hanging with legs down
+START: hanging upright on the station, legs straight down, shoulders pressed down
+END: both knees raised up toward the chest, hips curled slightly, lower abs contracted
+
+### kneeling-cable-crunch
+ANGLE: side
+NOTE: kneeling in front of a high cable pulley, holding a rope attachment at the sides of the head
+START: kneeling tall, torso upright, rope held by the head, slight tension on the cable
+END: torso crunched down, elbows driven toward the thighs, spine flexed, abs contracted
+
+### cable-pallof-press
+ANGLE: front 3/4
+NOTE: standing side-on to a cable pulley set at chest height, both hands gripping one handle — anti-rotation, body stays square to the front
+START: handle held in at the chest with both hands, cable pulling from the side, core braced
+END: arms pressed straight out in front of the chest, resisting the sideways pull, torso unmoved
+
+### side-lying-external-rotation
+ANGLE: side
+NOTE: lying on one side on a bench, bottom arm supporting the head; top arm holds a light dumbbell, elbow pinned to the side and bent 90 degrees
+START: forearm rotated down across the stomach, dumbbell near the belly, elbow tucked at side
+END: forearm rotated up toward the ceiling (externally rotated), elbow still pinned at side, dumbbell raised
+
+### cable-external-rotation
+ANGLE: front
+NOTE: standing side-on to a cable pulley at elbow height, working elbow pinned to the side and bent 90 degrees, a rolled towel between elbow and ribs
+START: forearm pulled in across the stomach toward the cable, elbow at side
+END: forearm rotated outward away from the body, elbow staying pinned at side, cable resisting
+
+### dumbbell-scaption-raise
+ANGLE: front 3/4
+NOTE: standing with light dumbbells, thumbs pointing up; raising arms in the scapular plane — about 30 degrees forward of straight-out-to-the-sides (a shallow Y)
+START: dumbbells in front of the thighs, thumbs up, arms straight
+END: arms raised to shoulder height in a Y / scaption position (30 degrees forward of lateral), thumbs up, no shrugging
+
+---
+
 ## Batch workflow
 
 1. Open the ChatGPT conversation with your bench press reference image
