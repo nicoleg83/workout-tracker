@@ -13,6 +13,7 @@ const state = {
   skipped: new Set(),
   exerciseNotes: {},
   restTimer: { active: false, remaining: 0, duration: 60, exerciseName: '' },
+  exerciseTimer: { active: false, exerciseId: null, elapsed: 0 },
   view: 'home',
   detailExercise: null,
   historySession: null,
@@ -37,6 +38,7 @@ const state = {
   seeding: false,
 };
 let timerInterval = null;
+let exerciseTimerInterval = null;
 
 // ── Helpers ──────────────────────────────────────────────────────
 function uuid() { return crypto.randomUUID(); }
@@ -94,9 +96,22 @@ function startingWeight(range) {
   const low = parts[0].trim();
   return /^\d+(\.\d+)?$/.test(low) ? `${low} lbs` : low;
 }
+function timeBasedKey(ex) { return `wt_timebased_${ex.image_key || ex.id}`; }
 function isTimeBased(exId) {
   const ex = state.sessionExercises.find(e => e.id === exId) || state.exercises.find(e => e.id === exId);
-  return ex ? /^\d+s$/.test(ex.reps_target || '') : false;
+  if (!ex) return false;
+  try {
+    const o = localStorage.getItem(timeBasedKey(ex));
+    if (o === '1') return true;
+    if (o === '0') return false;
+  } catch (_) {}
+  return /^\d+s$/.test(ex.reps_target || '');
+}
+function toggleTimeBased(exId) {
+  const ex = state.sessionExercises.find(e => e.id === exId) || state.exercises.find(e => e.id === exId);
+  if (!ex) return;
+  try { localStorage.setItem(timeBasedKey(ex), isTimeBased(exId) ? '0' : '1'); } catch (_) {}
+  renderView();
 }
 // Escape user-entered text before injecting into innerHTML (notes, etc.)
 function esc(s) {
@@ -467,8 +482,17 @@ async function loadProgressData() {
     if (history.length > 0) state.lastCache[exId] = history[0];
     let pr = null;
     for (const sess of history) {
-      if (!pr || (assisted ? sess.bestSet.weight_lbs < pr.weight_lbs : sess.bestSet.weight_lbs > pr.weight_lbs)) {
+      if (!sess.bestSet) continue;
+      if (!pr) {
         pr = { weight_lbs: sess.bestSet.weight_lbs, reps: sess.bestSet.reps, date: sess.date };
+      } else if (assisted) {
+        if (sess.bestSet.weight_lbs != null && sess.bestSet.weight_lbs < pr.weight_lbs)
+          pr = { weight_lbs: sess.bestSet.weight_lbs, reps: sess.bestSet.reps, date: sess.date };
+      } else {
+        const nW = sess.bestSet.weight_lbs ?? 0, nR = sess.bestSet.reps || 0;
+        const pW = pr.weight_lbs ?? 0, pR = pr.reps || 0;
+        if (nW > pW || (nW === pW && nR > pR))
+          pr = { weight_lbs: sess.bestSet.weight_lbs, reps: sess.bestSet.reps, date: sess.date };
       }
     }
     if (pr) state.prCache[exId] = pr;
@@ -477,18 +501,26 @@ async function loadProgressData() {
 }
 
 function checkPR(exerciseId, weight, reps) {
-  if (!weight || !state.prCache) return;
-  const w = parseFloat(weight);
-  if (!w) return;
+  if (!state.prCache) return;
+  const w = parseFloat(weight) || null;
+  const r = parseInt(reps) || 0;
+  if (w == null && r === 0) return;
   const pr = state.prCache[exerciseId];
   const assisted = isAssistedById(exerciseId);
-  if (!pr || (assisted ? w < pr.weight_lbs : w > pr.weight_lbs)) {
-    state.prCache[exerciseId] = { weight_lbs: w, reps: parseInt(reps) || 0, date: today() };
+  let isNewPR = false;
+  if (!pr) {
+    isNewPR = true;
+  } else if (assisted) {
+    isNewPR = w != null && w < pr.weight_lbs;
+  } else {
+    const prW = pr.weight_lbs ?? 0, prR = pr.reps || 0;
+    isNewPR = (w != null && w > prW) || (w != null && w === prW && r > prR) || (w == null && r > prR);
+  }
+  if (isNewPR) {
+    state.prCache[exerciseId] = { weight_lbs: w, reps: r, date: today() };
     const ex = state.sessionExercises.find(e => e.id === exerciseId)
             || state.exercises.find(e => e.id === exerciseId);
     const name = ex?.name || 'Exercise';
-    // Count one PR per exercise per session — beating your own new best on a
-    // later set in the same session shouldn't inflate the summary's PR tally.
     state.sessionPRExercises.add(exerciseId);
     state.sessionPRCount = state.sessionPRExercises.size;
     state.progressLoaded = false;
@@ -508,7 +540,7 @@ function initSetLogs(exercises) {
       const prev = last.find(l => l.set_number === i + 1);
       rows.push({
         setNumber: i + 1,
-        weight_lbs: prev ? prev.weight_lbs : null,
+        weight_lbs: prev ? (prev.weight_lbs ?? prev.notes ?? null) : null,
         reps: prev ? prev.reps : null,
         completed: false,
         is_pr: false,
@@ -732,16 +764,20 @@ async function toggleComplete(exerciseId, setIndex) {
     set.completed = true;
     haptic(10);
 
+    const rawW = String(set.weight_lbs ?? '').trim();
+    const numW = parseFloat(rawW);
+    const weightLbs = rawW && !isNaN(numW) ? numW : null;
+    const weightNote = rawW && isNaN(numW) ? rawW : null;
     const log = {
       id: uuid(),
       session_id: state.activeSession.id,
       exercise_id: exerciseId,
       set_number: set.setNumber,
-      weight_lbs: set.weight_lbs ? parseFloat(set.weight_lbs) : null,
+      weight_lbs: weightLbs,
       reps: set.reps ? parseInt(set.reps) : null,
       completed: true,
       is_pr: false,
-      notes: null,
+      notes: weightNote,
       logged_at: new Date().toISOString(),
       synced_at: new Date().toISOString(),
     };
@@ -749,7 +785,7 @@ async function toggleComplete(exerciseId, setIndex) {
     await DB.put('set_logs', log);
     await DB.queueSync('set_logs', 'insert', log);
     syncIfOnline();
-    if (log.weight_lbs) checkPR(exerciseId, log.weight_lbs, log.reps);
+    checkPR(exerciseId, weightLbs, log.reps);
   }
 
   updateSyncDot();
@@ -787,6 +823,42 @@ function stopRestTimer() {
   timerInterval = null;
   state.restTimer.active = false;
   renderRestTimer();
+}
+
+function startExerciseTimer(exId) {
+  if (state.exerciseTimer.active && state.exerciseTimer.exerciseId === exId) {
+    stopExerciseTimer();
+    return;
+  }
+  if (state.exerciseTimer.active) stopExerciseTimer();
+  state.exerciseTimer = { active: true, exerciseId: exId, elapsed: 0 };
+  haptic(10);
+  const updateDisplay = () => {
+    const el = document.getElementById('ex-timer-display');
+    const btn = document.getElementById('ex-timer-btn');
+    if (el) {
+      const m = String(Math.floor(state.exerciseTimer.elapsed / 60)).padStart(2, '0');
+      const s = String(state.exerciseTimer.elapsed % 60).padStart(2, '0');
+      el.textContent = `${m}:${s}`;
+      el.style.color = 'var(--pink)';
+    }
+    if (btn) { btn.textContent = 'Stop'; btn.className = 'btn btn-danger'; btn.style.cssText = 'flex:0 0 auto;width:auto;padding:8px 18px'; }
+  };
+  updateDisplay();
+  exerciseTimerInterval = setInterval(() => {
+    state.exerciseTimer.elapsed++;
+    updateDisplay();
+  }, 1000);
+}
+
+function stopExerciseTimer() {
+  clearInterval(exerciseTimerInterval);
+  exerciseTimerInterval = null;
+  state.exerciseTimer.active = false;
+  const el = document.getElementById('ex-timer-display');
+  const btn = document.getElementById('ex-timer-btn');
+  if (el) el.style.color = '';
+  if (btn) { btn.textContent = 'Start'; btn.className = 'btn btn-secondary'; btn.style.cssText = 'flex:0 0 auto;width:auto;padding:8px 18px'; }
 }
 
 function notifyTimerDone() {
@@ -905,6 +977,22 @@ async function removeLastSet(exerciseId) {
   renderView();
 }
 
+function removeExerciseFromSession(exId) {
+  const ex = state.sessionExercises.find(e => e.id === exId);
+  if (!ex || ex.sets_target === 0) return; // protect warmup/abs
+  const logs = (state.setLogs[exId] || []).filter(s => s._logId);
+  logs.forEach(async s => {
+    await DB.del('set_logs', s._logId);
+    const pending = await DB.getAll('pending_sync');
+    for (const p of pending) { if (p.payload?.id === s._logId) await DB.del('pending_sync', p.id); }
+    try { await Supabase.deleteRecord('set_logs', s._logId); } catch (_) {}
+  });
+  state.sessionExercises = state.sessionExercises.filter(e => e.id !== exId);
+  delete state.setLogs[exId];
+  state.skipped.delete(exId);
+  renderView();
+}
+
 function toggleSuperset(exerciseId) {
   const ex = state.sessionExercises.find(e => e.id === exerciseId);
   if (!ex) return;
@@ -943,6 +1031,12 @@ function nextGroupName() {
 
 function showSupersetMenu(supersetId, btn) {
   document.querySelectorAll('.ss-dropdown').forEach(el => el.remove());
+  const exercises = routineList().filter(e => e.superset_group === supersetId);
+  const removeOpts = exercises.map(ex => `
+    <button class="ss-dropdown-item" data-remove-from-ss="${esc(ex.id)}">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6l-12 12M6 6l12 12"/></svg>
+      Remove ${esc(ex.name)}
+    </button>`).join('');
   const menu = document.createElement('div');
   menu.className = 'ss-dropdown';
   menu.innerHTML = `
@@ -950,6 +1044,7 @@ function showSupersetMenu(supersetId, btn) {
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
       Rename
     </button>
+    ${removeOpts}
     <button class="ss-dropdown-item danger" data-ungroup-ss="${supersetId}">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6l-12 12M6 6l12 12"/></svg>
       Ungroup all exercises
@@ -958,6 +1053,12 @@ function showSupersetMenu(supersetId, btn) {
   menu.querySelector('[data-rename-ss]').addEventListener('click', e => {
     e.stopPropagation();
     startRenameSuperset(supersetId);
+  });
+  menu.querySelectorAll('[data-remove-from-ss]').forEach(b => {
+    b.addEventListener('click', e => {
+      e.stopPropagation();
+      removeExerciseFromSuperset(b.dataset.removeFromSs);
+    });
   });
   menu.querySelector('[data-ungroup-ss]').addEventListener('click', e => {
     e.stopPropagation();
@@ -1047,6 +1148,23 @@ function ungroupSuperset(supersetId) {
   routineList().forEach(ex => {
     if (ex.superset_group === supersetId) { ex.superset_group = null; ex.section = ''; changed.push(ex); }
   });
+  if (state.view === 'edit-day') markEditDirty();
+  renderView();
+}
+
+function removeExerciseFromSuperset(exId) {
+  document.querySelectorAll('.ss-dropdown').forEach(el => el.remove());
+  const list = routineList();
+  const ex = list.find(e => e.id === exId);
+  if (!ex) return;
+  const supersetId = ex.superset_group;
+  ex.superset_group = null;
+  ex.section = '';
+  const remaining = list.filter(e => e.superset_group === supersetId);
+  if (remaining.length === 1) {
+    remaining[0].superset_group = null;
+    remaining[0].section = '';
+  }
   if (state.view === 'edit-day') markEditDirty();
   renderView();
 }
@@ -1865,23 +1983,27 @@ function renderWorkout() {
 
         const meta = isNoteOnly
           ? (note ? `<div class="exercise-row-meta" style="color:var(--text3);font-style:italic;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:160px">${note}</div>` : '<div class="exercise-row-meta">Tap to add notes</div>')
-          : `<div class="exercise-row-meta">${ex.sets_target}×${ex.reps_target}${ex.weight_range ? ' · ' + startingWeight(ex.weight_range) : ''}</div>`;
+          : `<div class="exercise-row-meta">${ex.sets_target}×${ex.reps_target}</div>`;
 
         const lastSets = (state.lastLogs[ex.id] || []).filter(s => s.completed);
         let lastHint = '';
         if (!isNoteOnly && lastSets.length > 0) {
-          const weight = lastSets.find(s => s.weight_lbs)?.weight_lbs;
-          const reps = lastSets.find(s => s.reps)?.reps;
+          const weightNum = lastSets.find(s => s.weight_lbs)?.weight_lbs;
+          const weightTxt = lastSets.find(s => s.notes)?.notes;
+          const weightRaw = weightNum ?? weightTxt;
+          const lastReps = lastSets.find(s => s.reps)?.reps;
           const parts = [`${lastSets.length} sets`];
-          if (reps) parts.push(`${reps} reps`);
-          if (weight) parts.push(`${weight} lbs`);
+          if (lastReps) parts.push(`${lastReps} reps`);
+          if (weightRaw != null) parts.push(isNaN(parseFloat(String(weightRaw))) ? String(weightRaw) : `${weightRaw} lbs`);
           lastHint = `<div class="exercise-row-last">Last: ${parts.join(' · ')}</div>`;
         }
 
         const groupBtn = !isNoteOnly && state.activeSession
           ? `<button class="ex-group-btn" data-group-ex="${ex.id}" aria-label="Group"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg></button>`
           : '';
-        html += `<div class="exercise-row ${allDone?'done':''} ${isSkipped?'skipped':''} ${isNoteOnly?'note-only':''}" data-ex-id="${ex.id}">
+        html += `<div class="ex-swipe-wrap" data-swipe-wrap="${ex.id}">
+        <button class="ex-swipe-delete" data-remove-session-ex="${ex.id}" aria-label="Remove exercise">Remove</button>
+        <div class="exercise-row ${allDone?'done':''} ${isSkipped?'skipped':''} ${isNoteOnly?'note-only':''}" data-ex-id="${ex.id}">
           <div class="drag-handle">⠿</div>
           <div class="exercise-row-thumb">${thumb}</div>
           <div class="exercise-row-info">
@@ -1893,6 +2015,7 @@ function renderWorkout() {
             <div class="exercise-row-status">${statusEl}</div>
             ${groupBtn}
           </div>
+        </div>
         </div>`;
       }
 
@@ -1953,7 +2076,7 @@ function renderExerciseDetail() {
   let infoCard = '';
   if (!isNoteOnly && (instructions || equipChips || ex.weight_range || muscleChips)) {
     infoCard = `<div class="card">
-      ${(equipChips || ex.weight_range) ? `<div class="detail-section-label">Equipment</div><div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;">${equipChips}${ex.weight_range ? `<span class="tag tag-muted">~${startingWeight(ex.weight_range)}</span>` : ''}</div>` : ''}
+      ${equipChips ? `<div class="detail-section-label">Equipment</div><div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;">${equipChips}</div>` : ''}
       ${muscleChips ? `<div class="detail-section-label">Muscles</div><div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;">${muscleChips}</div>` : ''}
       ${instructions ? `<div class="detail-section-label">Instructions</div><ol class="instructions-list">${instructions}</ol>` : ''}
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;">
@@ -2033,8 +2156,18 @@ function renderExerciseDetail() {
 
   let setRows = '';
   if (inActiveSession && !isSkipped && !isNoteOnly) {
-    const repsCol = isTimeBased(ex.id) ? 'Secs' : 'Reps';
+    const timeBased = isTimeBased(ex.id);
+    const repsCol = timeBased ? 'Secs' : 'Reps';
+    const timerActive = state.exerciseTimer.active && state.exerciseTimer.exerciseId === ex.id;
+    const timerM = String(Math.floor(state.exerciseTimer.elapsed / 60)).padStart(2, '0');
+    const timerS = String(state.exerciseTimer.elapsed % 60).padStart(2, '0');
     setRows = `
+      <div class="time-toggle-row">
+        <span class="time-toggle-label">Reps / Secs</span>
+        <button class="time-toggle-btn ${timeBased ? 'active' : ''}" onclick="toggleTimeBased('${ex.id}')">
+          ${timeBased ? 'Secs' : 'Reps'}
+        </button>
+      </div>
       <div class="sets-header">
         <div>Set</div>
         <div style="text-align:center">Weight <span style="font-size:10px;opacity:.6">(lbs)</span></div>
@@ -2049,6 +2182,13 @@ function renderExerciseDetail() {
       <div class="btn-row mt8">
         <button class="btn btn-secondary" onclick="startRestTimer(${state.restTimer.duration})">Start Rest Timer</button>
         <button class="btn btn-danger" onclick="skipExercise('${ex.id}')">${isSkipped ? 'Unskip' : 'Skip'}</button>
+      </div>
+      <div class="ex-timer-card">
+        <div class="ex-timer-label">Exercise Timer</div>
+        <div id="ex-timer-display" class="ex-timer-display">${timerActive ? `${timerM}:${timerS}` : '00:00'}</div>
+        <button id="ex-timer-btn" class="btn ${timerActive ? 'btn-danger' : 'btn-secondary'} ex-timer-btn" onclick="startExerciseTimer('${ex.id}')">
+          ${timerActive ? 'Stop' : 'Start'}
+        </button>
       </div>`;
   }
 
@@ -2093,7 +2233,7 @@ function buildSetRow(exerciseId, i, s) {
     <div class="set-num">${i + 1}</div>
     <div class="set-input-wrap ${s.completed?'completed':''}">
       <button class="adj-btn" data-ex-id="${eid}" data-set-idx="${i}" data-field="w" data-dir="minus" data-step="5">−</button>
-      <input class="set-input" type="number" inputmode="decimal" placeholder="lbs" step="any" min="0"
+      <input class="set-input" type="text" inputmode="decimal" placeholder="lbs"
         value="${wVal}" data-ex-id="${eid}" data-set-idx="${i}" data-field="w" />
       <button class="adj-btn" data-ex-id="${eid}" data-set-idx="${i}" data-field="w" data-dir="plus" data-step="5">+</button>
     </div>
@@ -2192,7 +2332,7 @@ function renderSupersetDetail() {
             <div class="ss-ex-thumb">${thumb}</div>
             <div class="ss-ex-info">
               <div class="ss-ex-name">${ex.name}</div>
-              <div class="ss-ex-meta">${ex.sets_target}×${ex.reps_target}${ex.weight_range ? ' · ~' + startingWeight(ex.weight_range) : ''}</div>
+              <div class="ss-ex-meta">${ex.sets_target}×${ex.reps_target}</div>
               <div class="ss-ex-drill-hint">Details ›</div>
             </div>
           </div>
@@ -2872,6 +3012,40 @@ function bindViewEvents() {
     });
   }
 
+  // Swipe-to-delete: reveal remove button on left-swipe of exercise rows
+  if (sectionSortEl) {
+    let swipeStartX = 0, swipeStartY = 0, activeWrap = null;
+    sectionSortEl.addEventListener('touchstart', e => {
+      const wrap = e.target.closest('[data-swipe-wrap]');
+      if (!wrap) return;
+      swipeStartX = e.touches[0].clientX;
+      swipeStartY = e.touches[0].clientY;
+      activeWrap = wrap;
+    }, { passive: true });
+    sectionSortEl.addEventListener('touchmove', e => {
+      if (!activeWrap) return;
+      const dx = e.touches[0].clientX - swipeStartX;
+      const dy = e.touches[0].clientY - swipeStartY;
+      if (Math.abs(dy) > Math.abs(dx)) { activeWrap = null; return; }
+      const clamped = Math.min(0, Math.max(-80, dx));
+      activeWrap.querySelector('.exercise-row').style.transform = `translateX(${clamped}px)`;
+    }, { passive: true });
+    sectionSortEl.addEventListener('touchend', () => {
+      if (!activeWrap) return;
+      const row = activeWrap.querySelector('.exercise-row');
+      const dx = parseFloat(row.style.transform.replace(/[^-\d.]/g, '')) || 0;
+      if (dx < -40) {
+        row.style.transform = 'translateX(-80px)';
+        row.style.transition = 'transform 0.2s';
+      } else {
+        row.style.transform = '';
+        row.style.transition = 'transform 0.2s';
+        setTimeout(() => { row.style.transition = ''; }, 200);
+      }
+      activeWrap = null;
+    });
+  }
+
   // Superset detail: drill into individual exercise
   view.querySelectorAll('[data-ss-drill-ex]').forEach(el => {
     el.addEventListener('click', () => {
@@ -2903,9 +3077,15 @@ function bindViewEvents() {
       if (!input) return;
       let val = parseFloat(input.value) || 0;
       val = dir === 'plus' ? val + step : Math.max(0, val - step);
+      val = Math.round(val * 100) / 100;
       input.value = val;
       updateSet(exId, idx, field === 'w' ? 'weight_lbs' : 'reps', val);
     });
+  });
+
+  // Remove single exercise from session via swipe-delete button
+  view.querySelectorAll('[data-remove-session-ex]').forEach(btn => {
+    btn.addEventListener('click', () => removeExerciseFromSession(btn.dataset.removeSessionEx));
   });
 
   // Complete set button
@@ -3030,7 +3210,7 @@ function bindViewEvents() {
     Sortable.create(sectionSortEl, {
       handle: '.section-drag-handle',
       animation: 150,
-      delay: 120,
+      delay: 300,
       delayOnTouchOnly: true,
       draggable: '.section-group',
       onEnd() { rebuildSessionExercisesFromDOM(); },
@@ -3121,6 +3301,7 @@ function bindSetRowEvents(rowEl, exerciseId, i) {
       if (!input) return;
       let val = parseFloat(input.value) || 0;
       val = dir === 'plus' ? val + step : Math.max(0, val - step);
+      val = Math.round(val * 100) / 100;
       input.value = val;
       updateSet(exerciseId, i, field === 'w' ? 'weight_lbs' : 'reps', val);
     });

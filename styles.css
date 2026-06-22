@@ -1249,3 +1249,90 @@ body {
   color: var(--text3);
   font-style: italic;
 }
+
+/* ── Reps / Secs toggle ── */
+.time-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px 4px;
+}
+.time-toggle-label {
+  font-size: 13px;
+  color: var(--text2);
+}
+.time-toggle-btn {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 12px;
+  border-radius: 20px;
+  border: 1px solid var(--border, rgba(255,255,255,.12));
+  background: var(--surface2, rgba(255,255,255,.06));
+  color: var(--text2);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.time-toggle-btn.active {
+  background: var(--pink);
+  border-color: var(--pink);
+  color: #fff;
+}
+
+/* ── Per-exercise timer ── */
+.ex-timer-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--surface2, rgba(255,255,255,.06));
+  border-radius: 12px;
+  padding: 12px 16px;
+  margin: 8px 16px 0;
+}
+.ex-timer-label {
+  font-size: 12px;
+  color: var(--text2);
+  flex: 1;
+}
+.ex-timer-display {
+  font-size: 20px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  min-width: 54px;
+  text-align: center;
+}
+.ex-timer-btn {
+  width: auto !important;
+  padding: 6px 14px !important;
+  font-size: 13px !important;
+}
+
+/* ── Swipe-to-delete exercise rows ── */
+.ex-swipe-wrap {
+  position: relative;
+  overflow: hidden;
+}
+.ex-swipe-delete {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 80px;
+  background: #e53935;
+  color: #fff;
+  border: none;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 0;
+}
+.ex-swipe-wrap .exercise-row {
+  position: relative;
+  z-index: 1;
+  background: var(--surface, #1a1a2e);
+  transition: none;
+  will-change: transform;
+}
