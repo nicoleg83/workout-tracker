@@ -1,5 +1,6 @@
 /* ── Reset & base ── */
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; user-select: none; -webkit-user-select: none; }
+input, textarea, [contenteditable] { user-select: text; -webkit-user-select: text; }
 
 :root {
   --pink: #E91E8C;
@@ -652,8 +653,8 @@ body {
    Floor the top offsets so they always clear it. Scoped to the installed app so
    the in-browser/desktop layout is unaffected. */
 @media (display-mode: standalone) {
-  .view { padding-top: max(calc(env(safe-area-inset-top, 0px) + 20px), 60px); }
-  #sync-dot { top: max(calc(env(safe-area-inset-top, 0px) + 14px), 54px); }
+  .view { padding-top: max(calc(env(safe-area-inset-top, 0px) + 20px), 74px); }
+  #sync-dot { top: max(calc(env(safe-area-inset-top, 0px) + 14px), 64px); }
 }
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
 

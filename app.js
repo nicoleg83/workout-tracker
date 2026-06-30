@@ -1015,9 +1015,7 @@ function toggleSuperset(exerciseId) {
 // being edited, or the active session's exercises during a workout.
 function routineList() {
   if (state.view === 'edit-day') {
-    return state.exercises
-      .filter(e => e.day === state.editDay)
-      .sort((a, b) => a.sort_order - b.sort_order);
+    return state.editDraft || [];
   }
   return state.sessionExercises;
 }
@@ -1421,6 +1419,7 @@ function renderEditDay() {
     const supersetId = groupExs[0]?.superset_group ? groupExs[0].superset_group : null;
     const isSuperset = supersetId && groupExs.every(ex => ex.superset_group === supersetId);
     const rows = groupExs.map(editRow).join('');
+    const displaySection = section === 'Warmup + core' ? 'Compound Lifts' : section;
 
     if (isSuperset) {
       html += `<div class="section-group" data-section="${esc(section)}" data-superset-id="${esc(supersetId)}">
@@ -1428,7 +1427,7 @@ function renderEditDay() {
           <div class="superset-card-header section-draggable">
             <div style="display:flex;align-items:center;gap:8px">
               <span class="section-drag-handle">⠿</span>
-              <span class="superset-card-label">${esc(section || 'Superset')}</span>
+              <span class="superset-card-label">${esc(displaySection || 'Superset')}</span>
             </div>
             <button class="ss-menu-btn" data-ss-menu="${esc(supersetId)}">⋮</button>
           </div>
@@ -1439,7 +1438,7 @@ function renderEditDay() {
       const label = section === '' ? '' : `
         <div class="section-label section-draggable">
           <span class="section-drag-handle">⠿</span>
-          <span class="section-name-label">${esc(section)}</span>
+          <span class="section-name-label">${esc(displaySection)}</span>
           <button class="section-rename-btn" data-rename-section="${esc(section)}" aria-label="Rename section"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>
         </div>`;
       html += `<div class="section-group" data-section="${esc(section)}" data-superset-id="">
@@ -1796,7 +1795,7 @@ function renderHome() {
       </div>
       <div class="last-workout-text">
         <div style="font-size:11px;color:var(--text3);font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Last workout</div>
-        <strong>${last.day}${dayNameMap[last.day] ? ' — ' + dayNameMap[last.day] : ''}</strong>
+        <strong>${dayNameMap[last.day] || last.day}</strong>
         <span>${daysAgo(last.date)} · ${fmtDate(last.date)}</span>
       </div>
     </div>` : '';
@@ -1807,7 +1806,7 @@ function renderHome() {
   if (schedToday && schedToday !== 'Rest' && dayMeta(schedToday)) {
     todayWidget = `<div class="card mb16" style="border-color:var(--pink)">
       <div style="font-size:12px;color:var(--pink);font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;">Today's plan</div>
-      <div style="font-size:16px;font-weight:700;margin-bottom:12px;">${schedToday} — ${esc(dayName(schedToday))}</div>
+      <div style="font-size:16px;font-weight:700;margin-bottom:12px;">${esc(dayName(schedToday) || schedToday)}</div>
       <button class="day-card-start" data-day-start="${schedToday}" style="width:100%">Start Workout</button>
     </div>`;
   } else if (schedToday === 'Rest') {
@@ -1821,7 +1820,7 @@ function renderHome() {
   const inProgress = resumableSession ? `
     <div class="card mb16" style="border-color: var(--pink);">
       <div style="font-size:12px;color:var(--pink);font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;">Workout in progress</div>
-      <div style="font-size:16px;font-weight:700;margin-bottom:12px;">${resumableSession.day} — ${dayNameMap[resumableSession.day] || ''}</div>
+      <div style="font-size:16px;font-weight:700;margin-bottom:12px;">${dayNameMap[resumableSession.day] || resumableSession.day}</div>
       <button class="btn btn-primary" onclick="navigateTo('workout')">Resume</button>
     </div>` : '';
 
@@ -1883,7 +1882,7 @@ function renderWorkout() {
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
       </button>
       <div style="flex:1">
-        <div class="page-title">${state.activeDay} — ${dayNames[state.activeDay]}</div>
+        <div class="page-title">${dayNames[state.activeDay] || state.activeDay}</div>
         <div class="page-subtitle">${fmtDate(state.activeSession?.date || today())}</div>
       </div>
       <button class="reset-order-btn" onclick="resetExerciseOrder()">Reset order</button>
@@ -2392,7 +2391,7 @@ function renderSummary() {
     </div>
     <div class="card">
       <div class="section-label" style="margin-top:0">Session</div>
-      <div style="font-size:16px;font-weight:700">${state.activeDay} — ${dayNames[state.activeDay]}</div>
+      <div style="font-size:16px;font-weight:700">${dayNames[state.activeDay] || state.activeDay}</div>
       <div style="font-size:13px;color:var(--text2);margin-top:4px">${fmtDate(state.activeSession?.date || today())}</div>
     </div>
     <div style="margin-top:20px;">
@@ -2456,7 +2455,7 @@ function renderSessionDetail() {
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
       </button>
       <div style="flex:1">
-        <div class="page-title">${session.day} — ${dayNames[session.day] || ''}</div>
+        <div class="page-title">${dayNames[session.day] || session.day}</div>
         <div class="page-subtitle">${fmtDate(session.date)} · ${daysAgo(session.date)}</div>
       </div>
       <button class="icon-btn-danger" data-delete-session="${session.id}" title="Delete workout">
@@ -2931,7 +2930,7 @@ function renderHistory() {
     <div class="session-card" data-session-id="${s.id}">
       <div class="session-card-header">
         <div>
-          <div class="session-card-day">${s.day} — ${dayNames[s.day] || ''}</div>
+          <div class="session-card-day">${dayNames[s.day] || s.day}</div>
           <div class="session-card-date">${fmtDate(s.date)}</div>
         </div>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" style="color:var(--text3);flex-shrink:0"><path d="M9 18l6-6-6-6"/></svg>
