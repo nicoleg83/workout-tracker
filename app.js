@@ -989,6 +989,58 @@ async function syncIfOnline() {
   updateSyncDot();
 }
 
+// ── Recovery tools (temporary — tap the sync dot to open) ─────────
+// Surfaces what's actually sitting in this device's local IndexedDB so
+// unsynced data can be inspected/retried/exported before any fix runs.
+async function openRecovery() {
+  clearToast();
+  state.view = 'recover';
+  state.recoveryData = null;
+  renderView();
+  const [pending, sessions, setLogs] = await Promise.all([
+    DB.getAll('pending_sync'),
+    DB.getAll('sessions'),
+    DB.getAll('set_logs'),
+  ]);
+  pending.sort((a, b) => b.created_at - a.created_at);
+  sessions.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+  state.recoveryData = { pending, sessions, setLogs };
+  if (state.view === 'recover') renderView();
+}
+
+async function retryPendingItem(id) {
+  const item = (state.recoveryData?.pending || []).find(p => p.id === id);
+  if (!item) return;
+  try {
+    if (item.operation === 'insert') await Supabase.insert(item.table, item.payload);
+    else if (item.operation === 'update') await Supabase.update(item.table, item.payload);
+    await DB.del('pending_sync', item.id);
+    toast('Synced successfully', 'success');
+  } catch (err) {
+    toast(`Failed: ${err.message}`, 'error');
+  }
+  await openRecovery();
+}
+
+async function forceSyncAll() {
+  toast('Syncing…');
+  await syncIfOnline();
+  await openRecovery();
+}
+
+function copyRecoveryDump() {
+  const ta = document.getElementById('recovery-dump-ta');
+  if (!ta) return;
+  ta.select();
+  ta.setSelectionRange(0, ta.value.length);
+  try {
+    document.execCommand('copy');
+    toast('Copied — paste it somewhere safe');
+  } catch (_) {
+    toast('Select the text below and copy manually');
+  }
+}
+
 // ── Render helpers ───────────────────────────────────────────────
 function currentDayExercises() {
   if (state.sessionExercises.length > 0) return state.sessionExercises;
@@ -1825,6 +1877,7 @@ function renderView(direction = 'none') {
     case 'library':           el.innerHTML = renderLibrary(); break;
     case 'create-exercise':   el.innerHTML = renderCreateExercise(); break;
     case 'schedule':          el.innerHTML = renderSchedule(); break;
+    case 'recover':           el.innerHTML = renderRecovery(); break;
     default:                  el.innerHTML = renderHome();
   }
   el.scrollTop = 0;
@@ -3002,6 +3055,67 @@ function renderHistory() {
       <div class="page-title">History</div>
     </div>
     ${cards}`;
+}
+
+function renderRecovery() {
+  const header = `
+    <div class="page-header">
+      <button class="back-btn" aria-label="Back" onclick="setTab('home')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+      </button>
+      <div style="flex:1">
+        <div class="page-title">Recovery Tools</div>
+        <div class="page-subtitle">What's actually on this device</div>
+      </div>
+    </div>`;
+
+  if (!state.recoveryData) {
+    return `${header}<div class="empty"><div class="empty-icon">⏳</div><div class="empty-body">Loading local data…</div></div>`;
+  }
+
+  const { pending, sessions, setLogs } = state.recoveryData;
+
+  const pendingRows = pending.length ? pending.map(p => `
+    <div class="session-card">
+      <div class="session-card-header">
+        <div>
+          <div class="session-card-day">${esc(p.table)} · ${esc(p.operation)}</div>
+          <div class="session-card-date">${esc(new Date(p.created_at).toLocaleString())} · attempts: ${p.attempts}</div>
+        </div>
+      </div>
+      <div class="session-card-stats" style="white-space:pre-wrap;word-break:break-all;font-family:monospace;font-size:11px;text-align:left">${esc(JSON.stringify(p.payload))}</div>
+      <button class="btn btn-ghost" style="margin-top:8px" onclick="retryPendingItem('${p.id}')">Retry this item</button>
+    </div>`).join('') : `<div class="empty-body" style="padding:16px 0">Nothing queued — pending_sync is empty.</div>`;
+
+  const recentSessions = sessions.slice(0, 8).map(s => `
+    <div class="session-card">
+      <div class="session-card-header">
+        <div>
+          <div class="session-card-day">${esc(s.day)} — ${esc(s.date)}</div>
+          <div class="session-card-date">id: ${esc(s.id)}</div>
+        </div>
+      </div>
+    </div>`).join('');
+
+  const dumpJson = JSON.stringify(state.recoveryData, null, 2);
+
+  return `
+    ${header}
+    <div style="padding:0 16px 24px">
+      <button class="btn btn-primary" style="width:100%;margin-bottom:8px" onclick="forceSyncAll()">Force sync now</button>
+      <button class="btn btn-ghost" style="width:100%;margin-bottom:16px" onclick="copyRecoveryDump()">Copy full dump to clipboard</button>
+
+      <div class="page-title" style="font-size:15px;margin-bottom:8px">Pending sync queue (${pending.length})</div>
+      ${pendingRows}
+
+      <div class="page-title" style="font-size:15px;margin:20px 0 8px">Sessions on this device (${sessions.length} total, most recent 8 shown)</div>
+      ${recentSessions}
+
+      <div class="empty-body" style="padding:16px 0;font-size:12px">Local set_logs rows: ${setLogs.length}</div>
+
+      <textarea id="recovery-dump-ta" readonly
+        style="width:100%;height:140px;font-family:monospace;font-size:10px;background:var(--bg2);color:var(--text2);border:1px solid var(--border);border-radius:8px;padding:8px;margin-top:8px;box-sizing:border-box">${esc(dumpJson)}</textarea>
+    </div>`;
 }
 
 // ── Rest timer render ─────────────────────────────────────────────
