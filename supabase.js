@@ -14,9 +14,23 @@ const Supabase = (() => {
     };
   }
 
+  // Flaky connections (gym wifi) can leave a fetch hanging with no error for a
+  // long time — there's no default timeout. Abort after a few seconds so callers'
+  // existing offline fallbacks kick in quickly instead of the app looking stuck.
+  const TIMEOUT_MS = 7000;
+  async function fetchWithTimeout(url, opts = {}) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+    try {
+      return await fetch(url, { ...opts, signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   async function restReq(path, opts = {}) {
     const { headers: extraHeaders, ...fetchOpts } = opts;
-    const res = await fetch(`${BASE}/rest/v1${path}`, {
+    const res = await fetchWithTimeout(`${BASE}/rest/v1${path}`, {
       headers: headers(extraHeaders),
       ...fetchOpts,
     });
@@ -29,7 +43,7 @@ const Supabase = (() => {
   }
 
   async function authPost(path, body) {
-    const res = await fetch(`${BASE}/auth/v1${path}`, {
+    const res = await fetchWithTimeout(`${BASE}/auth/v1${path}`, {
       method: 'POST',
       headers: { 'apikey': ANON, 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -64,10 +78,21 @@ const Supabase = (() => {
       const s = JSON.parse(raw);
       // Refresh if expiring within 5 minutes
       if (Date.now() > s.expires_at - 300_000) {
-        const data = await authPost('/token?grant_type=refresh_token', {
-          refresh_token: s.refresh_token,
-        });
-        return storeSession(data);
+        try {
+          const data = await authPost('/token?grant_type=refresh_token', {
+            refresh_token: s.refresh_token,
+          });
+          return storeSession(data);
+        } catch (refreshErr) {
+          // A network failure (offline, timed out) is NOT the same as the server
+          // rejecting the refresh token. Being offline used to wipe the whole
+          // session here, bouncing the app to the login screen and hiding all
+          // local offline data. Keep using the cached (possibly stale) session
+          // instead so the app still opens; a real auth rejection while online
+          // still logs out below.
+          if (!navigator.onLine) { _session = s; return _session; }
+          throw refreshErr;
+        }
       }
       _session = s;
       return _session;

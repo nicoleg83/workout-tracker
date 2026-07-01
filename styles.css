@@ -20,7 +20,11 @@ input, textarea, [contenteditable] { user-select: text; -webkit-user-select: tex
   --safe-bottom: env(safe-area-inset-bottom, 0px);
 }
 
-html { font-size: 16px; }
+/* html has no background of its own by default, so on iOS standalone PWA the
+   overscroll/rubber-band area (which sits behind the notch/Dynamic Island) shows
+   through as whatever the OS default is instead of the app's black — looks like
+   a "cutout". Match body's background so there's never a gap to show through. */
+html { font-size: 16px; background: var(--bg); }
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   background: var(--bg);
@@ -481,52 +485,6 @@ body {
 .btn-row { display: flex; gap: 10px; margin-top: 12px; }
 .btn-row .btn { margin-top: 0; }
 
-/* ── Rest timer ── */
-#rest-timer {
-  position: fixed;
-  bottom: calc(var(--tab-h) + env(safe-area-inset-bottom, 0px) + 12px);
-  left: 50%;
-  transform: translateX(-50%);
-  width: calc(100% - 32px);
-  max-width: 448px;
-  background: var(--bg2);
-  border: 1px solid var(--pink);
-  border-radius: var(--radius);
-  padding: 12px 16px;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  z-index: 90;
-  box-shadow: 0 4px 20px rgba(233,30,140,0.2);
-}
-#rest-timer.hidden { display: none; }
-
-.timer-bar-wrap {
-  flex: 1;
-  height: 6px;
-  background: var(--bg4);
-  border-radius: 3px;
-  overflow: hidden;
-}
-.timer-bar {
-  height: 100%;
-  background: var(--pink);
-  border-radius: 3px;
-  transition: width 0.5s linear;
-}
-.timer-text { font-size: 22px; font-weight: 800; color: var(--pink); min-width: 52px; text-align: center; }
-.timer-label { font-size: 11px; color: var(--text2); }
-.timer-stop {
-  width: 32px; height: 32px;
-  border-radius: 50%;
-  background: var(--bg3);
-  border: none;
-  color: var(--text2);
-  display: flex; align-items: center; justify-content: center;
-  cursor: pointer;
-  flex-shrink: 0;
-}
-
 /* ── Progress view ── */
 .exercise-picker {
   background: var(--bg2);
@@ -703,25 +661,6 @@ body {
 .summary-stat-label { font-size: 13px; color: var(--text2); margin-top: 4px; }
 
 .summary-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px; }
-
-/* ── Timer duration selector ── */
-.timer-options {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-top: 8px;
-}
-.timer-opt {
-  padding: 6px 14px;
-  border-radius: 20px;
-  border: 1px solid var(--border);
-  background: var(--bg3);
-  color: var(--text2);
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-}
-.timer-opt.active { border-color: var(--pink); color: var(--pink); background: rgba(233,30,140,0.08); }
 
 /* ── Home last-workout widget ── */
 .last-workout-widget {
@@ -1185,6 +1124,12 @@ body {
   background: var(--bg2); border-radius: 20px 20px 0 0;
   padding: 12px 16px calc(env(safe-area-inset-bottom, 0px) + 24px);
   transform: translateY(100%); transition: transform 0.25s cubic-bezier(.32,.72,0,1);
+  /* Long option lists (e.g. swap-exercise across a big library) had no height
+     cap or scroll, so the sheet just grew taller than the viewport with no way
+     to reach the rest of the list. Cap it and let the sheet itself scroll. */
+  max-height: min(80vh, calc(100dvh - 40px));
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
 .group-picker-panel.open { transform: translateY(0); }
 .group-picker-handle {
@@ -1325,7 +1270,9 @@ body {
 /* ── Swipe-to-delete exercise rows ── */
 .ex-swipe-wrap {
   position: relative;
+  width: 100%;
   overflow: hidden;
+  border-radius: 10px;
 }
 .ex-swipe-delete {
   position: absolute;
@@ -1347,7 +1294,8 @@ body {
 .ex-swipe-wrap .exercise-row {
   position: relative;
   z-index: 1;
-  background: var(--surface, #1a1a2e);
+  width: 100%;
+  background: var(--bg2);
   transition: none;
   will-change: transform;
 }

@@ -12,7 +12,6 @@ const state = {
   lastLogs: {},
   skipped: new Set(),
   exerciseNotes: {},
-  restTimer: { active: false, remaining: 0, duration: 60, exerciseName: '' },
   exerciseTimer: { active: false, exerciseId: null, elapsed: 0 },
   view: 'home',
   detailExercise: null,
@@ -37,7 +36,6 @@ const state = {
   loading: false,
   seeding: false,
 };
-let timerInterval = null;
 let exerciseTimerInterval = null;
 let toastTimeout = null;
 
@@ -217,7 +215,11 @@ function toast(msg, type = '') {
   el.textContent = msg;
   el.className = `show ${type}`;
   clearTimeout(toastTimeout);
-  toastTimeout = setTimeout(() => { el.className = ''; }, 1500);
+  // Each new toast (e.g. back-to-back "New PR" toasts across consecutive sets)
+  // resets this clock, so several quick completions used to keep one banner
+  // visibly hanging around the whole time. Shorter duration makes that far less
+  // noticeable while keeping it readable for a single toast.
+  toastTimeout = setTimeout(() => { el.className = ''; }, 1100);
 }
 function clearToast() {
   clearTimeout(toastTimeout);
@@ -589,6 +591,11 @@ function checkPR(exerciseId, weight, reps) {
     state.sessionPRExercises.add(exerciseId);
     state.sessionPRCount = state.sessionPRExercises.size;
     state.progressLoaded = false;
+    // Persist the PR tally into the session immediately (not just on pause/finish) —
+    // this was only ever kept in memory before, so it silently reset to 0 whenever
+    // the app got backgrounded/killed mid-workout (common on a phone) and got
+    // resumed later, even though the PR itself was correctly recorded.
+    saveSessionMeta(false);
     toast(`New PR — ${name} 🏆`, 'success');
     haptic([10, 60, 20]);
   }
@@ -706,6 +713,7 @@ async function saveSessionMeta(finished = false) {
       note: state.exerciseNotes[ex.id] || '',
     })),
     skipped: Array.from(state.skipped),
+    prExercises: Array.from(state.sessionPRExercises),
   };
   const updated = { ...state.activeSession, notes: JSON.stringify(meta) };
   state.activeSession = updated;
@@ -742,7 +750,6 @@ async function completeAndGoHome() {
   state.progressLoaded = false;
   state.sessionPRCount = 0;
   state.sessionPRExercises = new Set();
-  stopRestTimer();
   await loadSessions();
   setTab('home');
 }
@@ -775,7 +782,6 @@ async function endAndGoHome() {
   state.progressLoaded = false;
   state.sessionPRCount = 0;
   state.sessionPRExercises = new Set();
-  stopRestTimer();
   await loadSessions();
   setTab('home');
 }
@@ -799,7 +805,6 @@ async function cancelSession() {
   state.progressLoaded = false;
   state.sessionPRCount = 0;
   state.sessionPRExercises = new Set();
-  stopRestTimer();
   await loadSessions();
   setTab('home');
 }
@@ -869,29 +874,6 @@ function skipExercise(exerciseId) {
   renderView();
 }
 
-// ── Rest timer ───────────────────────────────────────────────────
-function startRestTimer(duration) {
-  stopRestTimer();
-  state.restTimer = { active: true, remaining: duration, duration, exerciseName: '' };
-  renderRestTimer();
-  timerInterval = setInterval(() => {
-    state.restTimer.remaining -= 1;
-    if (state.restTimer.remaining <= 0) {
-      stopRestTimer();
-      notifyTimerDone();
-    } else {
-      renderRestTimer();
-    }
-  }, 1000);
-}
-
-function stopRestTimer() {
-  clearInterval(timerInterval);
-  timerInterval = null;
-  state.restTimer.active = false;
-  renderRestTimer();
-}
-
 function startExerciseTimer(exId) {
   if (state.exerciseTimer.active && state.exerciseTimer.exerciseId === exId) {
     stopExerciseTimer();
@@ -926,21 +908,6 @@ function stopExerciseTimer() {
   const btn = document.getElementById('ex-timer-btn');
   if (el) el.style.color = '';
   if (btn) { btn.textContent = 'Start'; btn.className = 'btn btn-secondary'; btn.style.cssText = 'flex:0 0 auto;width:auto;padding:8px 18px'; }
-}
-
-function notifyTimerDone() {
-  toast('Rest time done — next set!', 'success');
-  if ('Notification' in window && Notification.permission === 'granted') {
-    new Notification('Rest done!', { body: 'Time for your next set.' });
-  }
-}
-
-function setTimerDuration(sec) {
-  state.restTimer.duration = sec;
-  if (state.restTimer.active) startRestTimer(sec);
-  document.querySelectorAll('.timer-opt').forEach(el => {
-    el.classList.toggle('active', parseInt(el.dataset.sec) === sec);
-  });
 }
 
 // ── Sync ─────────────────────────────────────────────────────────
@@ -1067,6 +1034,68 @@ function addCustomExercise() {
   else state.sessionExercises.push(ex);
   state.setLogs[ex.id] = Array.from({length: ex.sets_target}, (_, i) => ({ setNumber: i+1, weight_lbs: null, reps: null, completed: false, _logId: null }));
   renderView();
+}
+
+// Adds an exercise already in the catalog (any day, or Library) into today's
+// session, instead of always starting from a blank custom exercise.
+function addExistingExerciseToSession(exId) {
+  const source = state.exercises.find(e => e.id === exId);
+  if (!source) return;
+  const ex = { ...source, section: '', superset_group: null };
+  const absIdx = state.sessionExercises.findIndex(e => e.name === 'Abs');
+  if (absIdx >= 0) state.sessionExercises.splice(absIdx, 0, ex);
+  else state.sessionExercises.push(ex);
+  const prevSets = state.lastCache?.[exId]?.sets || [];
+  state.setLogs[ex.id] = Array.from({ length: ex.sets_target }, (_, i) => ({
+    setNumber: i + 1,
+    weight_lbs: prevSets[i]?.weight_lbs ?? null,
+    reps: prevSets[i]?.reps ?? null,
+    completed: false,
+    _logId: null,
+  }));
+  toast(`Added ${ex.name}`);
+  renderView();
+}
+
+function showAddExercisePicker() {
+  const inSession = new Set(state.sessionExercises.map(e => e.id));
+  const candidates = state.exercises
+    .filter(e => !e._custom && !inSession.has(e.id))
+    .sort((a, b) => {
+      const aSameDay = a.day === state.activeDay ? 0 : 1;
+      const bSameDay = b.day === state.activeDay ? 0 : 1;
+      return aSameDay - bSameDay || a.name.localeCompare(b.name);
+    });
+
+  const opts = candidates.map(c => `
+    <button class="group-sheet-option" data-add-existing="${c.id}">
+      <div>
+        <span class="group-sheet-label">${esc(c.name)}</span>
+        <span class="group-sheet-meta">${c.day !== state.activeDay ? esc(c.day) + ' · ' : ''}${esc(c.equipment || '')}</span>
+      </div>
+    </button>`).join('');
+
+  const sheet = document.createElement('div');
+  sheet.id = 'group-picker-sheet';
+  sheet.innerHTML = `
+    <div class="group-picker-backdrop"></div>
+    <div class="group-picker-panel">
+      <div class="group-picker-handle"></div>
+      <div class="group-picker-title">Add exercise</div>
+      <button class="group-sheet-option group-sheet-create" data-add-blank="1">
+        <div><span class="group-sheet-label">+ Blank exercise</span><span class="group-sheet-meta">Name it yourself</span></div>
+      </button>
+      ${opts || '<div style="padding:8px 4px;color:var(--text2);font-size:14px">No other exercises in your Library yet.</div>'}
+      <button class="group-picker-cancel">Cancel</button>
+    </div>`;
+  document.body.appendChild(sheet);
+  requestAnimationFrame(() => sheet.querySelector('.group-picker-panel').classList.add('open'));
+  sheet.querySelector('.group-picker-backdrop').addEventListener('click', closeGroupPicker);
+  sheet.querySelector('.group-picker-cancel').addEventListener('click', closeGroupPicker);
+  sheet.querySelector('[data-add-blank]').addEventListener('click', () => { closeGroupPicker(); addCustomExercise(); });
+  sheet.querySelectorAll('[data-add-existing]').forEach(btn => {
+    btn.addEventListener('click', () => { closeGroupPicker(); addExistingExerciseToSession(btn.dataset.addExisting); });
+  });
 }
 
 // Append an extra set (set 4, 5, …) to an exercise for this session only —
@@ -1750,42 +1779,6 @@ function submitNewExercise() {
   navigateTo('library', {}, 'back');
 }
 
-// ── Weekly schedule (in-app plan; no device reminders) ───────────────
-const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-function getSchedule() {
-  try { return JSON.parse(localStorage.getItem('wt_schedule') || '{}'); } catch (_) { return {}; }
-}
-function setScheduleDay(idx, label) {
-  const s = getSchedule();
-  s[idx] = label;
-  try { localStorage.setItem('wt_schedule', JSON.stringify(s)); } catch (_) {}
-}
-
-function renderSchedule() {
-  const s = getSchedule();
-  const choices = ['Rest', ...(state.routineDays || []).map(d => d.label)];
-  const rows = WEEKDAYS.map((wd, i) => {
-    const cur = s[i] || 'Rest';
-    const opts = choices.map(v =>
-      `<option value="${esc(v)}" ${cur === v ? 'selected' : ''}>${v === 'Rest' ? 'Rest' : esc(`${v} — ${dayName(v) || ''}`)}</option>`).join('');
-    return `<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 0;border-bottom:1px solid var(--border)">
-      <div style="font-weight:600">${wd}</div>
-      <select class="set-input" style="width:auto;min-width:150px" data-sched-day="${i}">${opts}</select>
-    </div>`;
-  }).join('');
-  return `
-    <div class="page-header">
-      <button class="back-btn" aria-label="Back" onclick="setTab('home')">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
-      </button>
-      <div style="flex:1">
-        <div class="page-title" style="font-size:18px">Weekly Schedule</div>
-        <div class="page-subtitle">Your plan at a glance — phone reminders aren't sent</div>
-      </div>
-    </div>
-    <div class="card">${rows}</div>`;
-}
-
 function saveExerciseNote(exerciseId, note) {
   state.exerciseNotes[exerciseId] = note;
 }
@@ -1885,7 +1878,6 @@ function renderView(direction = 'none') {
     case 'edit-day':          el.innerHTML = renderEditDay(); break;
     case 'library':           el.innerHTML = renderLibrary(); break;
     case 'create-exercise':   el.innerHTML = renderCreateExercise(); break;
-    case 'schedule':          el.innerHTML = renderSchedule(); break;
     case 'recover':           el.innerHTML = renderRecovery(); break;
     default:                  el.innerHTML = renderHome();
   }
@@ -1919,19 +1911,6 @@ function renderHome() {
         <span>${daysAgo(last.date)} · ${fmtDate(last.date)}</span>
       </div>
     </div>` : '';
-
-  // Today's plan from the weekly schedule
-  const schedToday = getSchedule()[new Date().getDay()];
-  let todayWidget = '';
-  if (schedToday && schedToday !== 'Rest' && dayMeta(schedToday)) {
-    todayWidget = `<div class="card mb16" style="border-color:var(--pink)">
-      <div style="font-size:12px;color:var(--pink);font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;">Today's plan</div>
-      <div style="font-size:16px;font-weight:700;margin-bottom:12px;">${esc(dayName(schedToday) || schedToday)}</div>
-      <button class="day-card-start" data-day-start="${schedToday}" style="width:100%">Start Workout</button>
-    </div>`;
-  } else if (schedToday === 'Rest') {
-    todayWidget = `<div class="card mb16"><div style="font-size:13px;color:var(--text2)">Today's plan: Rest day 🌙</div></div>`;
-  }
 
   // Show resume card if actively in a workout OR if a saved-but-exited session exists
   const savedId = localStorage.getItem('activeWorkoutSessionId');
@@ -1976,7 +1955,6 @@ function renderHome() {
       </button>
     </div>
     ${inProgress}
-    ${todayWidget}
     ${lastWidget}
     <div class="day-cards">${cards}
       <div class="day-card" data-newday="1" style="display:flex;flex-direction:column;align-items:center;justify-content:center;border:1px dashed var(--border);color:var(--text3);cursor:pointer;min-height:118px;-webkit-tap-highlight-color:transparent;" onclick="createNewDay()">
@@ -1984,8 +1962,7 @@ function renderHome() {
         <div style="font-size:13px;font-weight:600;margin-top:6px;">New day</div>
       </div>
     </div>
-    <button class="add-exercise-btn" style="margin-top:14px" onclick="navigateTo('library', {}, 'forward')">⊞ Exercise Library</button>
-    <button class="add-exercise-btn" style="margin-top:8px" onclick="navigateTo('schedule', {}, 'forward')">📅 Weekly Schedule</button>`;
+    <button class="add-exercise-btn" style="margin-top:14px" onclick="navigateTo('library', {}, 'forward')">⊞ Exercise Library</button>`;
 }
 
 // ── Workout view ─────────────────────────────────────────────────
@@ -2143,7 +2120,7 @@ function renderWorkout() {
   }
 
   html += `</div>
-    <button class="add-exercise-btn" onclick="addCustomExercise()">+ Add exercise</button>
+    <button class="add-exercise-btn" onclick="showAddExercisePicker()">+ Add exercise</button>
     <button class="btn btn-ghost" style="margin-top:8px" onclick="saveSessionAsDefault()">⤓ Save current order as my default</button>
     <div style="margin-top:16px;">
       <button class="btn btn-primary" onclick="finishSession()">Finish Workout</button>
@@ -2299,7 +2276,6 @@ function renderExerciseDetail() {
         ${logs.length > ex.sets_target ? `<button class="btn btn-secondary" onclick="removeLastSet('${ex.id}')">− Remove set</button>` : ''}
       </div>
       <div class="btn-row mt8">
-        <button class="btn btn-secondary" onclick="startRestTimer(${state.restTimer.duration})">Start Rest Timer</button>
         <button class="btn btn-danger" onclick="skipExercise('${ex.id}')">${isSkipped ? 'Unskip' : 'Skip'}</button>
       </div>
       ${!isNoteOnly && !ex._custom ? `<div class="btn-row mt8"><button class="btn btn-secondary" onclick="showSwapPicker('${ex.id}')">↔ Swap exercise</button></div>` : ''}
@@ -2474,9 +2450,6 @@ function renderSupersetDetail() {
     </div>
     <div class="card" style="padding:0;overflow:hidden">
       ${exBlocks}
-    </div>
-    <div class="btn-row mt8" style="padding:0 16px">
-      <button class="btn btn-secondary" onclick="startRestTimer(${state.restTimer.duration})">Start Rest Timer</button>
     </div>`;
 }
 
@@ -3127,29 +3100,6 @@ function renderRecovery() {
     </div>`;
 }
 
-// ── Rest timer render ─────────────────────────────────────────────
-function renderRestTimer() {
-  const el = document.getElementById('rest-timer');
-  if (!el) return;
-  if (!state.restTimer.active) { el.classList.add('hidden'); return; }
-  el.classList.remove('hidden');
-  const { remaining, duration } = state.restTimer;
-  const pct = Math.round((remaining / duration) * 100);
-  const mm = String(Math.floor(remaining / 60)).padStart(2,'0');
-  const ss = String(remaining % 60).padStart(2,'0');
-  el.innerHTML = `
-    <div>
-      <div class="timer-label">Rest timer</div>
-    </div>
-    <div class="timer-bar-wrap">
-      <div class="timer-bar" style="width:${pct}%"></div>
-    </div>
-    <div class="timer-text">${mm}:${ss}</div>
-    <button class="timer-stop" onclick="stopRestTimer()">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
-    </button>`;
-}
-
 // ── Swap exercise (during active session) ────────────────────────
 function showSwapPicker(exId) {
   const ex = state.sessionExercises.find(e => e.id === exId);
@@ -3391,11 +3341,6 @@ function bindViewEvents() {
     });
   });
 
-  // Timer options
-  view.querySelectorAll('.timer-opt').forEach(btn => {
-    btn.addEventListener('click', () => setTimerDuration(parseInt(btn.dataset.sec)));
-  });
-
   // Session card click → detail
   view.querySelectorAll('.session-card[data-session-id]').forEach(card => {
     card.addEventListener('click', () => openSessionDetail(card.dataset.sessionId));
@@ -3495,6 +3440,10 @@ function bindViewEvents() {
   });
 
   // Drag-and-drop: nested SortableJS (sections + exercises within sections)
+  // Autoscroll options are explicit (not just relying on library defaults) since
+  // the default sensitivity/speed made it hard to reorder a long list — dragging
+  // near the top/bottom edge of the screen needs to scroll the list itself while
+  // still tracking the drag.
   if (sectionSortEl && typeof Sortable !== 'undefined') {
     Sortable.create(sectionSortEl, {
       handle: '.section-drag-handle',
@@ -3502,6 +3451,11 @@ function bindViewEvents() {
       delay: 300,
       delayOnTouchOnly: true,
       draggable: '.section-group',
+      scroll: true,
+      scrollSensitivity: 100,
+      scrollSpeed: 15,
+      forceAutoScrollFallback: true,
+      bubbleScroll: true,
       onEnd() { rebuildSessionExercisesFromDOM(); },
     });
     sectionSortEl.querySelectorAll('.exercise-sortable-inner').forEach(innerEl => {
@@ -3510,6 +3464,11 @@ function bindViewEvents() {
         animation: 150,
         delay: 120,
         delayOnTouchOnly: true,
+        scroll: true,
+        scrollSensitivity: 100,
+        scrollSpeed: 15,
+        forceAutoScrollFallback: true,
+        bubbleScroll: true,
         onEnd() { rebuildSessionExercisesFromDOM(); },
       });
     });
@@ -3550,9 +3509,6 @@ function bindViewEvents() {
   }
   view.querySelectorAll('[data-lib-filter]').forEach(btn => {
     btn.addEventListener('click', () => { state.libraryFilter = btn.dataset.libFilter || null; renderView(); });
-  });
-  view.querySelectorAll('select[data-sched-day]').forEach(sel => {
-    sel.addEventListener('change', () => setScheduleDay(parseInt(sel.dataset.schedDay), sel.value));
   });
   view.querySelectorAll('[data-lib-ex]').forEach(row => {
     row.addEventListener('click', () => showMoveToDayPicker(row.dataset.libEx));
@@ -3710,7 +3666,6 @@ async function finishAuth(session) {
   window.addEventListener('online', () => { updateSyncDot(); syncIfOnline(); });
   window.addEventListener('offline', () => updateSyncDot());
   renderView();
-  renderRestTimer();
 }
 
 // ── Resume workout after app exit ────────────────────────────────
@@ -3785,6 +3740,8 @@ async function tryResumeSession() {
   state.setLogs = setLogs;
   state.skipped = new Set(meta?.skipped || []);
   state.exerciseNotes = exerciseNotes;
+  state.sessionPRExercises = new Set(meta?.prExercises || []);
+  state.sessionPRCount = state.sessionPRExercises.size;
   state.view = 'workout';
   state.tab = 'workout';
 }
@@ -3847,9 +3804,6 @@ async function init() {
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('./sw.js').catch(() => {});
   }
-  if ('Notification' in window && Notification.permission === 'default') {
-    Notification.requestPermission();
-  }
 
   await DB.open();
   updateSyncDot();
@@ -3879,7 +3833,6 @@ async function init() {
   window.addEventListener('offline', () => updateSyncDot());
 
   renderView();
-  renderRestTimer();
 }
 
 document.addEventListener('DOMContentLoaded', init);
