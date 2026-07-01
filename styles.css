@@ -1280,13 +1280,21 @@ body {
   width: 100%;
   overflow: hidden;
   border-radius: 10px;
+  /* Establish a proper clipping/compositing boundary — without this, overflow:hidden
+     combined with a `will-change: transform` child can bleed a sliver of the absolutely
+     positioned sibling through at the edges on some browsers/GPUs. */
+  isolation: isolate;
+  transform: translateZ(0);
 }
 .ex-swipe-delete {
   position: absolute;
-  right: 0;
-  top: 0;
-  bottom: 0;
-  width: 80px;
+  /* Slightly overdrawn past the wrap's right edge (absorbed by overflow:hidden above) so
+     a sub-pixel rounding gap between this and .exercise-row's right edge can't reveal a
+     hairline of red at rest. */
+  right: -4px;
+  top: -1px;
+  bottom: -1px;
+  width: 84px;
   background: #e53935;
   color: #fff;
   border: none;
@@ -1304,5 +1312,4 @@ body {
   width: 100%;
   background: var(--bg2);
   transition: none;
-  will-change: transform;
 }
