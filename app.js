@@ -626,7 +626,6 @@ function initSetLogs(exercises) {
 // ── Navigation ───────────────────────────────────────────────────
 function setTab(tab) {
   clearToast();
-  if (tab === 'workout' && !state.activeSession) tab = 'home';
   state.tab = tab;
   state.view = tab;
   document.querySelectorAll('.tab-btn').forEach(b => {
@@ -1175,6 +1174,27 @@ function nextGroupName() {
   return `Group ${n}`;
 }
 
+function nextSectionName() {
+  const existing = new Set(routineList().map(e => e.section));
+  let n = 1;
+  while (existing.has(`Section ${n}`)) n++;
+  return `Section ${n}`;
+}
+
+// Gives a standalone exercise its own heading without making it a superset —
+// just for organizing a long day into labeled groups (e.g. "Warmup", "Core").
+function createNewSection(exId) {
+  const list = routineList();
+  const ex = list.find(e => e.id === exId);
+  if (!ex) return;
+  ex.superset_group = null;
+  const name = nextSectionName();
+  ex.section = name;
+  if (state.view === 'edit-day') markEditDirty();
+  renderView();
+  requestAnimationFrame(() => startRenameSection(name));
+}
+
 function showSupersetMenu(supersetId, btn) {
   document.querySelectorAll('.ss-dropdown').forEach(el => el.remove());
   const exercises = routineList().filter(e => e.superset_group === supersetId);
@@ -1339,12 +1359,19 @@ function showGroupPicker(exId) {
     <div class="group-picker-backdrop"></div>
     <div class="group-picker-panel">
       <div class="group-picker-handle"></div>
-      <div class="group-picker-title">Group with another exercise</div>
+      <div class="group-picker-title">Organize this exercise</div>
       <button class="group-sheet-option group-sheet-create" id="gp-create">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--pink)" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
         <div>
-          <span class="group-sheet-label">Create new group</span>
+          <span class="group-sheet-label">Create new group (superset)</span>
           <span class="group-sheet-meta">Pairs with the next exercise in the list</span>
+        </div>
+      </button>
+      <button class="group-sheet-option group-sheet-create" id="gp-create-section">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--pink)" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        <div>
+          <span class="group-sheet-label">Create new section</span>
+          <span class="group-sheet-meta">Just a heading to organize the list — not a superset</span>
         </div>
       </button>
       ${existingOpts ? `<div class="group-picker-section-label">Add to existing group</div>${existingOpts}` : ''}
@@ -1355,6 +1382,7 @@ function showGroupPicker(exId) {
   sheet.querySelector('.group-picker-backdrop').addEventListener('click', closeGroupPicker);
   sheet.querySelector('.group-picker-cancel').addEventListener('click', closeGroupPicker);
   sheet.querySelector('#gp-create').addEventListener('click', () => { closeGroupPicker(); createNewGroup(exId); });
+  sheet.querySelector('#gp-create-section').addEventListener('click', () => { closeGroupPicker(); createNewSection(exId); });
   sheet.querySelectorAll('[data-add-to]').forEach(btn => {
     btn.addEventListener('click', () => { closeGroupPicker(); addExerciseToGroup(exId, btn.dataset.addTo); });
   });
@@ -1676,10 +1704,7 @@ function renderLibrary() {
 
   return `
     <div class="page-header">
-      <button class="back-btn" aria-label="Back" onclick="setTab('home')">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
-      </button>
-      <div style="flex:1"><div class="page-title" style="font-size:18px">Exercise Library</div></div>
+      <div class="page-title">Exercise Library</div>
     </div>
     <input id="lib-search" class="set-input" style="width:100%;box-sizing:border-box;margin-bottom:10px" placeholder="Search exercises…" value="${esc(state.librarySearch || '')}" />
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">${chips}</div>
@@ -1961,8 +1986,7 @@ function renderHome() {
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
         <div style="font-size:13px;font-weight:600;margin-top:6px;">New day</div>
       </div>
-    </div>
-    <button class="add-exercise-btn" style="margin-top:14px" onclick="navigateTo('library', {}, 'forward')">⊞ Exercise Library</button>`;
+    </div>`;
 }
 
 // ── Workout view ─────────────────────────────────────────────────
