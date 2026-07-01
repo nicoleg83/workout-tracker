@@ -1280,21 +1280,13 @@ body {
   width: 100%;
   overflow: hidden;
   border-radius: 10px;
-  /* Establish a proper clipping/compositing boundary — without this, overflow:hidden
-     combined with a `will-change: transform` child can bleed a sliver of the absolutely
-     positioned sibling through at the edges on some browsers/GPUs. */
-  isolation: isolate;
-  transform: translateZ(0);
 }
 .ex-swipe-delete {
   position: absolute;
-  /* Slightly overdrawn past the wrap's right edge (absorbed by overflow:hidden above) so
-     a sub-pixel rounding gap between this and .exercise-row's right edge can't reveal a
-     hairline of red at rest. */
-  right: -4px;
-  top: -1px;
-  bottom: -1px;
-  width: 84px;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 80px;
   background: #e53935;
   color: #fff;
   border: none;
@@ -1305,6 +1297,13 @@ body {
   align-items: center;
   justify-content: center;
   z-index: 0;
+  /* The visible sliver was specifically at the rounded corner, not the straight edges:
+     .exercise-row rounds off its own corners (border-radius on the base .exercise-row
+     rule), so right at that corner the row's opaque background doesn't quite reach into
+     the same rounded shape the wrap clips to — exposing this button's square corner
+     underneath in that gap. Rounding this button's trailing corners to match means even
+     if that gap exists, there's no square corner left to poke through it. */
+  border-radius: 0 10px 10px 0;
 }
 .ex-swipe-wrap .exercise-row {
   position: relative;
