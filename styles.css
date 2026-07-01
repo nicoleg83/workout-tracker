@@ -636,17 +636,31 @@ body {
 #toast.success { border-color: var(--green); color: var(--green); }
 #toast.error { border-color: #ef4444; color: #ef4444; }
 
-/* ── Sync indicator ── */
+/* ── Sync indicator ──
+   The visible dot is tiny (8px) by design, but the tappable area is enlarged
+   to 44x44 (Apple's minimum touch-target guidance) via a centered pseudo-element,
+   so it's actually hittable on a phone screen. */
 #sync-dot {
+  width: 44px; height: 44px;
+  position: fixed;
+  top: calc(env(safe-area-inset-top, 0px) - 4px); right: -2px;
+  z-index: 150;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+#sync-dot::before {
+  content: '';
   width: 8px; height: 8px;
   border-radius: 50%;
   background: var(--green);
-  position: fixed;
-  top: calc(env(safe-area-inset-top, 0px) + 14px); right: 16px;
-  z-index: 150;
+  transition: transform 0.15s;
 }
-#sync-dot.pending { background: var(--gold); animation: pulse 1s ease-in-out infinite; }
-#sync-dot.offline { background: var(--text3); }
+#sync-dot:active::before { transform: scale(1.6); }
+#sync-dot.pending::before { background: var(--gold); animation: pulse 1s ease-in-out infinite; }
+#sync-dot.offline::before { background: var(--text3); }
 
 /* iOS standalone PWA: env(safe-area-inset-top) can report 0 even on notched /
    Dynamic Island devices, leaving the header text and sync dot under the notch.
@@ -654,7 +668,7 @@ body {
    the in-browser/desktop layout is unaffected. */
 @media (display-mode: standalone) {
   .view { padding-top: max(calc(env(safe-area-inset-top, 0px) + 20px), 74px); }
-  #sync-dot { top: max(calc(env(safe-area-inset-top, 0px) + 14px), 64px); }
+  #sync-dot { top: max(calc(env(safe-area-inset-top, 0px) - 4px), 46px); }
 }
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
 
