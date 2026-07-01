@@ -17,7 +17,7 @@ const Supabase = (() => {
   // Flaky connections (gym wifi) can leave a fetch hanging with no error for a
   // long time — there's no default timeout. Abort after a few seconds so callers'
   // existing offline fallbacks kick in quickly instead of the app looking stuck.
-  const TIMEOUT_MS = 7000;
+  const TIMEOUT_MS = 4000;
   async function fetchWithTimeout(url, opts = {}) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);

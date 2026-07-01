@@ -269,6 +269,13 @@ async function loadExercises() {
   }
 }
 
+// Local-only read, no network — used to get the app on screen instantly at
+// boot instead of blocking behind a Supabase round-trip every single time.
+async function loadExercisesLocal() {
+  const cached = await DB.getAll('exercises');
+  state.exercises = cached.length > 0 ? cached : EXERCISES.map((e, i) => ({ ...e, id: `local-${i}` }));
+}
+
 async function seedExercises() {
   state.seeding = true;
   renderSeedingOverlay();
@@ -300,6 +307,12 @@ async function loadRoutineDays() {
       return;
     } catch (_) {}
   }
+  const cached = await DB.getAll('routine_days');
+  state.routineDays = (cached.length ? cached : DEFAULT_ROUTINE_DAYS.map((d, i) => ({ id: `local-day-${i}`, archived: false, ...d })))
+    .filter(d => !d.archived).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
+}
+
+async function loadRoutineDaysLocal() {
   const cached = await DB.getAll('routine_days');
   state.routineDays = (cached.length ? cached : DEFAULT_ROUTINE_DAYS.map((d, i) => ({ id: `local-day-${i}`, archived: false, ...d })))
     .filter(d => !d.archived).sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0));
@@ -418,6 +431,15 @@ async function loadSessions() {
   } else {
     state.sessions = all.sort((a, b) => b.date.localeCompare(a.date));
   }
+}
+
+// Local-only read (no network, no orphan/reconciliation cleanup) — for getting
+// the app on screen instantly; loadSessions() still runs after in the background
+// to reconcile with Supabase and catch cross-device changes.
+async function loadSessionsLocal() {
+  const all = await DB.getAll('sessions');
+  state.sessions = (state.user?.id ? all.filter(s => s.user_id === state.user.id) : all)
+    .sort((a, b) => b.date.localeCompare(a.date));
 }
 
 async function loadLastLogs(day) {
@@ -3824,9 +3846,37 @@ async function maybeAutoBackup() {
 }
 
 // ── Init ──────────────────────────────────────────────────────────
+// Reconciles local data with Supabase in the background, after the app is
+// already on screen. Runs the same network-first loaders that init() used to
+// block on. Skips re-rendering if it would yank the user out of an active
+// workout (that view doesn't depend on these globals anyway) or reset their
+// scroll position pointlessly.
+async function refreshFromNetwork() {
+  if (!navigator.onLine) return;
+  try {
+    await loadExercises(); // Must run before syncIfOnline so exercises exist in Supabase for local-* remap
+    await loadRoutineDays();
+    await syncIfOnline();
+    await loadSessions();
+    await loadProgressData();
+    await pruneEmptySessions();
+  } catch (_) {}
+  updateSyncDot();
+  if (!state.activeSession) renderView();
+}
+
 async function init() {
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('./sw.js').catch(() => {});
+    // The SW already does skipWaiting()+clients.claim(), so a new version can take
+    // over an already-open tab without a manual close/reopen — this just means the
+    // page is now running old code under a new controller. Reload once to actually
+    // pick up the new code, instead of requiring "open it twice" every update.
+    // Skipped mid-workout so an update never yanks you out of an active session.
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (state.activeSession) return;
+      window.location.reload();
+    });
   }
 
   await DB.open();
@@ -3839,15 +3889,15 @@ async function init() {
   }
   state.user = session.user;
 
-  document.getElementById('main-view').innerHTML = `<div class="loading"><div class="spinner"></div><div>Loading…</div></div>`;
-
-  await loadExercises(); // Must run before syncIfOnline so exercises exist in Supabase for local-* remap
-  await loadRoutineDays();
-  await syncIfOnline();
-  await loadSessions();
+  // Local-first: get the app on screen from whatever's already on this device
+  // before touching the network at all. Previously this awaited 4-5 sequential
+  // Supabase calls before the first render, so on a slow/flaky connection
+  // (gym wifi) the "Loading…" spinner could sit there for way longer than the
+  // data actually needed to take, since it was all already on the phone.
+  await loadExercisesLocal();
+  await loadRoutineDaysLocal();
+  await loadSessionsLocal();
   await loadProgressData();
-  await pruneEmptySessions();
-  await maybeAutoBackup();
   await tryResumeSession();
 
   document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -3857,6 +3907,8 @@ async function init() {
   window.addEventListener('offline', () => updateSyncDot());
 
   renderView();
+
+  refreshFromNetwork();
 }
 
 document.addEventListener('DOMContentLoaded', init);
