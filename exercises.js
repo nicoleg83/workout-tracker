@@ -119,7 +119,7 @@ const EXERCISES = [
   // (no muscles column there) — these entries also feed the muscle-chip fallback by image_key.
 
   // Warmup + activation
-  { day:'Day 4', section:'Warmup + activation', name:'Terminal Knee Extension', equipment:'Resistance Band', weight_range:'Light → Medium Band', sets_target:3, reps_target:'15 per leg', instructions:['Anchor a band at knee height, loop it behind one knee','Stand with a slight bend in the working knee','Straighten the knee fully against the band','Squeeze the quad, return slowly'], image_key:'terminal-knee-extension', superset_group:null, sort_order:1, muscles:{primary:['Quads'],secondary:['Knee Stabilizers']} },
+  { day:'Day 4', section:'Warmup + activation', name:'Leg Extension', equipment:'Leg Extension Machine', weight_range:'Light → Moderate', sets_target:3, reps_target:'15', instructions:['Sit in the machine with the pad resting on your lower shins','Adjust the seat so your knees align with the pivot point','Extend both legs until straight, squeezing quads at the top','Lower slowly — do not let the weight drop'], image_key:null, superset_group:null, sort_order:1, muscles:{primary:['Quads'],secondary:['VMO']} },
   { day:'Day 4', section:'Warmup + activation', name:'Lateral Band Walk', equipment:'Resistance Band', weight_range:'Light Band', sets_target:3, reps_target:'10 per direction', instructions:['Band around thighs or ankles','Step side-to-side in a quarter-squat stance','Keep constant tension on the band'], image_key:'lateral-band-walk', superset_group:null, sort_order:2, muscles:{primary:['Glutes Medius','TFL'],secondary:['Hip Abductors']} },
 
   // Superset A — Hinge

@@ -39,6 +39,7 @@ const state = {
 };
 let timerInterval = null;
 let exerciseTimerInterval = null;
+let toastTimeout = null;
 
 // ── Helpers ──────────────────────────────────────────────────────
 function uuid() { return crypto.randomUUID(); }
@@ -112,6 +113,12 @@ function toggleTimeBased(exId) {
   if (!ex) return;
   try { localStorage.setItem(timeBasedKey(ex), isTimeBased(exId) ? '0' : '1'); } catch (_) {}
   renderView();
+}
+// Format a weight value for display — shows text (e.g. "BW") when weight is 0 and notes present
+function fmtWeight(weightLbs, notes) {
+  if (weightLbs != null && weightLbs !== 0) return weightLbs + ' lbs';
+  if (notes) return notes;
+  return null;
 }
 // Escape user-entered text before injecting into innerHTML (notes, etc.)
 function esc(s) {
@@ -209,7 +216,13 @@ function toast(msg, type = '') {
   const el = document.getElementById('toast');
   el.textContent = msg;
   el.className = `show ${type}`;
-  setTimeout(() => { el.className = ''; }, 2500);
+  clearTimeout(toastTimeout);
+  toastTimeout = setTimeout(() => { el.className = ''; }, 1500);
+}
+function clearToast() {
+  clearTimeout(toastTimeout);
+  const el = document.getElementById('toast');
+  if (el) el.className = '';
 }
 
 // ── Sync dot ─────────────────────────────────────────────────────
@@ -425,6 +438,22 @@ async function loadLastLogs(day) {
   for (const exId of Object.keys(state.lastLogs)) {
     state.lastLogs[exId] = dedupeSetLogs(state.lastLogs[exId]);
   }
+
+  // Cross-day last logs: for exercises with no history in this day,
+  // pull the most recent log from any other day with the same image_key.
+  if (state.lastCache) {
+    for (const ex of state.exercises.filter(e => e.day === day && e.image_key)) {
+      if (state.lastLogs[ex.id]?.length) continue;
+      const sameKey = state.exercises.filter(e => e.id !== ex.id && e.image_key === ex.image_key);
+      let best = null;
+      for (const other of sameKey) {
+        const entry = state.lastCache[other.id];
+        if (!entry) continue;
+        if (!best || entry.date > best.date) best = entry;
+      }
+      if (best?.sets?.length) state.lastLogs[ex.id] = best.sets;
+    }
+  }
 }
 
 async function loadProgressData() {
@@ -497,6 +526,33 @@ async function loadProgressData() {
     }
     if (pr) state.prCache[exId] = pr;
   }
+  // Cross-day PR: exercises sharing the same image_key share their best PR.
+  // e.g. "Barbell Hip Thrust" on Day 1 and Day 4 → one all-time PR across both.
+  const prByKey = {};
+  for (const [exId, pr] of Object.entries(state.prCache)) {
+    const ex = state.exercises.find(e => e.id === exId);
+    const key = ex?.image_key;
+    if (!key) continue;
+    const assisted = isAssistedById(exId);
+    const cur = prByKey[key];
+    if (!cur) { prByKey[key] = { pr, assisted }; continue; }
+    const isBetter = assisted
+      ? pr.weight_lbs < cur.pr.weight_lbs
+      : (pr.weight_lbs > cur.pr.weight_lbs || (pr.weight_lbs === cur.pr.weight_lbs && (pr.reps || 0) > (cur.pr.reps || 0)));
+    if (isBetter) prByKey[key] = { pr, assisted };
+  }
+  for (const ex of state.exercises) {
+    const key = ex?.image_key;
+    if (!key || !prByKey[key]) continue;
+    const { pr: best, assisted } = prByKey[key];
+    const local = state.prCache[ex.id];
+    if (!local) { state.prCache[ex.id] = best; continue; }
+    const isBetter = assisted
+      ? best.weight_lbs < local.weight_lbs
+      : (best.weight_lbs > local.weight_lbs || (best.weight_lbs === local.weight_lbs && (best.reps || 0) > (local.reps || 0)));
+    if (isBetter) state.prCache[ex.id] = best;
+  }
+
   state.progressLoaded = true;
 }
 
@@ -540,7 +596,7 @@ function initSetLogs(exercises) {
       const prev = last.find(l => l.set_number === i + 1);
       rows.push({
         setNumber: i + 1,
-        weight_lbs: prev ? (prev.weight_lbs ?? prev.notes ?? null) : null,
+        weight_lbs: prev ? (prev.weight_lbs === 0 && prev.notes ? prev.notes : (prev.weight_lbs ?? prev.notes ?? null)) : null,
         reps: prev ? prev.reps : null,
         completed: false,
         is_pr: false,
@@ -553,6 +609,7 @@ function initSetLogs(exercises) {
 
 // ── Navigation ───────────────────────────────────────────────────
 function setTab(tab) {
+  clearToast();
   if (tab === 'workout' && !state.activeSession) tab = 'home';
   state.tab = tab;
   state.view = tab;
@@ -567,6 +624,7 @@ function setTab(tab) {
 }
 
 function navigateTo(view, data = {}, direction = 'forward') {
+  clearToast();
   state.view = view;
   if (data.exercise) state.detailExercise = data.exercise;
   if (data.day) state.activeDay = data.day;
@@ -766,7 +824,7 @@ async function toggleComplete(exerciseId, setIndex) {
 
     const rawW = String(set.weight_lbs ?? '').trim();
     const numW = parseFloat(rawW);
-    const weightLbs = rawW && !isNaN(numW) ? numW : null;
+    const weightLbs = rawW && !isNaN(numW) ? numW : (rawW ? 0 : null);
     const weightNote = rawW && isNaN(numW) ? rawW : null;
     const log = {
       id: uuid(),
@@ -2095,7 +2153,7 @@ function renderExerciseDetail() {
       const setRows = lastSets.map(s =>
         `<div class="last-set-row">
           <div class="last-set-num">Set ${s.set_number}</div>
-          <div class="last-set-val">${s.weight_lbs != null ? s.weight_lbs + ' lbs' : '—'} &nbsp;×&nbsp; ${s.reps != null ? s.reps + ' reps' : '—'}</div>
+          <div class="last-set-val">${fmtWeight(s.weight_lbs, s.notes) || '—'} &nbsp;×&nbsp; ${s.reps != null ? s.reps + ' reps' : '—'}</div>
         </div>`
       ).join('');
       const prRow = prData ? `
@@ -2103,7 +2161,7 @@ function renderExerciseDetail() {
           <div class="last-pr-left">
             <span class="last-pr-label">🏆 PR</span>
             <div>
-              <div class="last-pr-val">${prData.weight_lbs} lbs × ${prData.reps}</div>
+              <div class="last-pr-val">${fmtWeight(prData.weight_lbs, null) || '—'} × ${prData.reps}</div>
               <div class="last-pr-sub">${fmtDate(prData.date)}</div>
             </div>
           </div>
@@ -2182,6 +2240,7 @@ function renderExerciseDetail() {
         <button class="btn btn-secondary" onclick="startRestTimer(${state.restTimer.duration})">Start Rest Timer</button>
         <button class="btn btn-danger" onclick="skipExercise('${ex.id}')">${isSkipped ? 'Unskip' : 'Skip'}</button>
       </div>
+      ${!isNoteOnly && !ex._custom ? `<div class="btn-row mt8"><button class="btn btn-secondary" onclick="showSwapPicker('${ex.id}')">↔ Swap exercise</button></div>` : ''}
       <div class="ex-timer-card">
         <div class="ex-timer-label">Exercise Timer</div>
         <div id="ex-timer-display" class="ex-timer-display">${timerActive ? `${timerM}:${timerS}` : '00:00'}</div>
@@ -2283,7 +2342,7 @@ function renderSupersetDetail() {
         const setRows = prevSets.map(s =>
           `<div class="last-set-row">
             <div class="last-set-num">Set ${s.set_number}</div>
-            <div class="last-set-val">${s.weight_lbs != null ? s.weight_lbs + ' lbs' : '—'} &nbsp;×&nbsp; ${s.reps != null ? s.reps + ' reps' : '—'}</div>
+            <div class="last-set-val">${fmtWeight(s.weight_lbs, s.notes) || '—'} &nbsp;×&nbsp; ${s.reps != null ? s.reps + ' reps' : '—'}</div>
           </div>`
         ).join('');
         const prRow = prData ? `
@@ -2291,7 +2350,7 @@ function renderSupersetDetail() {
             <div class="last-pr-left">
               <span class="last-pr-label">🏆 PR</span>
               <div>
-                <div class="last-pr-val">${prData.weight_lbs} lbs × ${prData.reps}</div>
+                <div class="last-pr-val">${fmtWeight(prData.weight_lbs, null) || '—'} × ${prData.reps}</div>
                 <div class="last-pr-sub">${fmtDate(prData.date)}</div>
               </div>
             </div>
@@ -2526,7 +2585,7 @@ function renderSessionDetail() {
     const rows = sets.map((s, idx) => `
       <div class="sdet-set-row">
         <span class="sdet-set-num">${s.set_number}</span>
-        <span class="sdet-set-weight">${s.weight_lbs != null ? s.weight_lbs + ' lbs' : '—'}</span>
+        <span class="sdet-set-weight">${fmtWeight(s.weight_lbs, s.notes) || '—'}</span>
         <span class="sdet-set-reps">${s.reps != null ? s.reps + ' reps' : '—'}</span>
         <span>${idx === prSetIdx ? '<span class="pr-badge">🏆 PR</span>' : ''}</span>
       </div>`).join('');
@@ -2657,7 +2716,7 @@ function renderProgress() {
       const prBadge = isPR ? ` <span class="pr-badge">🏆 PR</span>` : '';
 
       const lastVal = last
-        ? `${last.bestSet.weight_lbs} lbs × ${last.bestSet.reps}${prBadge}`
+        ? `${fmtWeight(last.bestSet.weight_lbs, last.bestSet.notes) || last.bestSet.weight_lbs + ' lbs'} × ${last.bestSet.reps}${prBadge}`
         : `<span class="prog-no-data">No data yet</span>`;
 
       rowsHtml += `
@@ -2865,7 +2924,7 @@ function renderProgressExercise() {
       <div class="prog-hist-row">
         <div class="prog-hist-date">${fmtDate(h.date)}</div>
         <div class="prog-hist-info">
-          <div class="prog-hist-best">${h.bestSet.weight_lbs} lbs × ${h.bestSet.reps}</div>
+          <div class="prog-hist-best">${fmtWeight(h.bestSet.weight_lbs, h.bestSet.notes) || h.bestSet.weight_lbs + ' lbs'} × ${h.bestSet.reps}</div>
           <div class="prog-hist-sub">${h.sets.length} set${h.sets.length !== 1 ? 's' : ''} total</div>
         </div>
         ${isPR ? `<div class="pr-badge">🏆 PR</div>` : ''}
@@ -2968,6 +3027,96 @@ function renderRestTimer() {
     </button>`;
 }
 
+// ── Swap exercise (during active session) ────────────────────────
+function showSwapPicker(exId) {
+  const ex = state.sessionExercises.find(e => e.id === exId);
+  if (!ex) return;
+  const inSession = new Set(state.sessionExercises.map(e => e.id));
+  const candidates = state.exercises
+    .filter(e => !e._custom && e.id !== exId && !inSession.has(e.id))
+    .sort((a, b) => {
+      // Same day first, then alphabetical
+      const aSameDay = a.day === ex.day ? 0 : 1;
+      const bSameDay = b.day === ex.day ? 0 : 1;
+      return aSameDay - bSameDay || a.name.localeCompare(b.name);
+    });
+
+  const opts = candidates.map(c => `
+    <button class="group-sheet-option" data-swap-with="${c.id}">
+      <div>
+        <span class="group-sheet-label">${esc(c.name)}</span>
+        <span class="group-sheet-meta">${c.day !== ex.day ? esc(c.day) + ' · ' : ''}${esc(c.equipment || '')}</span>
+      </div>
+    </button>`).join('');
+
+  const sheet = document.createElement('div');
+  sheet.id = 'group-picker-sheet';
+  sheet.innerHTML = `
+    <div class="group-picker-backdrop"></div>
+    <div class="group-picker-panel">
+      <div class="group-picker-handle"></div>
+      <div class="group-picker-title">Swap ${esc(ex.name)}</div>
+      ${opts || '<div style="padding:8px 4px;color:var(--text2);font-size:14px">No other exercises available. Add more via the Library.</div>'}
+      <button class="group-picker-cancel">Cancel</button>
+    </div>`;
+  document.body.appendChild(sheet);
+  requestAnimationFrame(() => sheet.querySelector('.group-picker-panel').classList.add('open'));
+  sheet.querySelector('.group-picker-backdrop').addEventListener('click', closeGroupPicker);
+  sheet.querySelector('.group-picker-cancel').addEventListener('click', closeGroupPicker);
+  sheet.querySelectorAll('[data-swap-with]').forEach(btn => {
+    btn.addEventListener('click', () => { closeGroupPicker(); swapExercise(exId, btn.dataset.swapWith); });
+  });
+}
+
+async function swapExercise(oldExId, newExId) {
+  const idx = state.sessionExercises.findIndex(e => e.id === oldExId);
+  if (idx === -1) return;
+  const newEx = state.exercises.find(e => e.id === newExId);
+  if (!newEx) return;
+  const oldEx = state.sessionExercises[idx];
+
+  // Keep section/superset context from the old exercise
+  const swappedIn = { ...newEx, section: oldEx.section, superset_group: oldEx.superset_group };
+  state.sessionExercises[idx] = swappedIn;
+
+  // Build set logs for the new exercise, prefilling from lastCache if available
+  const prevSets = state.lastCache?.[newExId]?.sets || [];
+  const rows = [];
+  for (let i = 0; i < newEx.sets_target; i++) {
+    const prev = prevSets.find(l => l.set_number === i + 1);
+    rows.push({
+      setNumber: i + 1,
+      weight_lbs: prev ? (prev.weight_lbs === 0 && prev.notes ? prev.notes : (prev.weight_lbs ?? prev.notes ?? null)) : null,
+      reps: prev ? prev.reps : null,
+      completed: false,
+      is_pr: false,
+      _logId: null,
+    });
+  }
+  state.setLogs[newExId] = rows;
+  delete state.setLogs[oldExId];
+  state.skipped.delete(oldExId);
+
+  toast(`Swapped to ${newEx.name}`);
+
+  // Ask if this should become the default for the routine
+  if (confirm(`Save ${newEx.name} as the default replacement for ${oldEx.name} in ${state.activeDay}?`)) {
+    // Move old exercise to Library
+    const oldCatalog = state.exercises.find(e => e.id === oldExId);
+    if (oldCatalog) {
+      oldCatalog.day = 'Library'; oldCatalog.section = ''; oldCatalog.superset_group = null;
+      persistExercise(oldCatalog);
+    }
+    // Assign new exercise to this day with same sort order
+    newEx.day = state.activeDay;
+    newEx.section = oldEx.section || '';
+    newEx.sort_order = oldEx.sort_order || 0;
+    persistExercise(newEx);
+  }
+
+  navigateTo('exercise-detail', { exercise: swappedIn });
+}
+
 // ── Event binding ─────────────────────────────────────────────────
 function bindViewEvents() {
   const view = document.getElementById('main-view');
@@ -3011,21 +3160,38 @@ function bindViewEvents() {
     });
   }
 
-  // Swipe-to-delete: reveal remove button on left-swipe of exercise rows
+  // Swipe-to-delete: reveal remove button on deliberate left-swipe of exercise rows
   if (sectionSortEl) {
-    let swipeStartX = 0, swipeStartY = 0, activeWrap = null;
+    let swipeStartX = 0, swipeStartY = 0, activeWrap = null, swipeTracking = false;
+
+    function closeAllSwipes() {
+      sectionSortEl.querySelectorAll('[data-swipe-wrap] .exercise-row').forEach(row => {
+        if (row.style.transform) {
+          row.style.transition = 'transform 0.2s';
+          row.style.transform = '';
+          setTimeout(() => { row.style.transition = ''; }, 200);
+        }
+      });
+    }
+
     sectionSortEl.addEventListener('touchstart', e => {
       const wrap = e.target.closest('[data-swipe-wrap]');
-      if (!wrap) return;
+      if (!wrap) { closeAllSwipes(); return; }
       swipeStartX = e.touches[0].clientX;
       swipeStartY = e.touches[0].clientY;
       activeWrap = wrap;
+      swipeTracking = false;
     }, { passive: true });
     sectionSortEl.addEventListener('touchmove', e => {
       if (!activeWrap) return;
       const dx = e.touches[0].clientX - swipeStartX;
       const dy = e.touches[0].clientY - swipeStartY;
-      if (Math.abs(dy) > Math.abs(dx)) { activeWrap = null; return; }
+      // Cancel if vertical movement dominates
+      if (Math.abs(dy) > Math.abs(dx) + 5) { activeWrap = null; return; }
+      // Only track once horizontal movement is deliberate (>12px)
+      if (!swipeTracking && Math.abs(dx) < 12) return;
+      swipeTracking = true;
+      if (dx > 0) return; // right swipes close, don't re-open
       const clamped = Math.min(0, Math.max(-80, dx));
       activeWrap.querySelector('.exercise-row').style.transform = `translateX(${clamped}px)`;
     }, { passive: true });
@@ -3033,7 +3199,7 @@ function bindViewEvents() {
       if (!activeWrap) return;
       const row = activeWrap.querySelector('.exercise-row');
       const dx = parseFloat(row.style.transform.replace(/[^-\d.]/g, '')) || 0;
-      if (dx < -40) {
+      if (dx < -60) {
         row.style.transform = 'translateX(-80px)';
         row.style.transition = 'transform 0.2s';
       } else {
@@ -3042,6 +3208,7 @@ function bindViewEvents() {
         setTimeout(() => { row.style.transition = ''; }, 200);
       }
       activeWrap = null;
+      swipeTracking = false;
     });
   }
 
