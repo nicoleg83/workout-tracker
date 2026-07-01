@@ -42,14 +42,15 @@ body {
 .view {
   flex: 1;
   overflow-y: auto;
-  /* In a regular Safari tab (not installed as a standalone PWA), env(safe-area-inset-top)
-     reports 0 — Safari's own chrome is assumed to handle the notch/Dynamic Island. But
-     the Dynamic Island is a fixed OS overlay at a fixed physical position on screen; with
-     only 20px of top padding, page content (e.g. the page title) can land right in that
-     band and visually collide with it. Floor this the same way the standalone override
-     below does, just with a smaller minimum since Safari's address bar already gives some
-     clearance on its own. */
-  padding: max(calc(env(safe-area-inset-top, 0px) + 20px), 54px) 16px calc(var(--tab-h) + env(safe-area-inset-bottom, 0px) + 16px);
+  /* env(safe-area-inset-top) is unreliable across browsers for how much the
+     Dynamic Island actually overlaps page content in a plain browser tab —
+     it reports 0 in Chrome/Safari on iOS (assuming their own chrome handles
+     it), but the Island's physical screen position doesn't move, and how much
+     it actually overlaps varies by browser and toolbar state. Rather than
+     chase per-browser/per-mode measurements, use one generous fixed floor
+     everywhere (installed app or any browser tab) — a bit more empty space
+     at the top is a much smaller cost than the title colliding with it. */
+  padding: max(calc(env(safe-area-inset-top, 0px) + 20px), 92px) 16px calc(var(--tab-h) + env(safe-area-inset-bottom, 0px) + 16px);
   -webkit-overflow-scrolling: touch;
 }
 
@@ -608,7 +609,7 @@ body {
 #sync-dot {
   width: 44px; height: 44px;
   position: fixed;
-  top: calc(env(safe-area-inset-top, 0px) - 4px); right: -2px;
+  top: max(calc(env(safe-area-inset-top, 0px) - 4px), 60px); right: -2px;
   z-index: 150;
   display: flex;
   align-items: center;
@@ -626,15 +627,6 @@ body {
 #sync-dot:active::before { transform: scale(1.6); }
 #sync-dot.pending::before { background: var(--gold); animation: pulse 1s ease-in-out infinite; }
 #sync-dot.offline::before { background: var(--text3); }
-
-/* iOS standalone PWA: env(safe-area-inset-top) can report 0 even on notched /
-   Dynamic Island devices, leaving the header text and sync dot under the notch.
-   Floor the top offsets so they always clear it. Scoped to the installed app so
-   the in-browser/desktop layout is unaffected. */
-@media (display-mode: standalone) {
-  .view { padding-top: max(calc(env(safe-area-inset-top, 0px) + 20px), 74px); }
-  #sync-dot { top: max(calc(env(safe-area-inset-top, 0px) - 4px), 46px); }
-}
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
 
 /* ── Workout progress bar ── */
