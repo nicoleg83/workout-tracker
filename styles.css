@@ -42,7 +42,14 @@ body {
 .view {
   flex: 1;
   overflow-y: auto;
-  padding: calc(env(safe-area-inset-top, 0px) + 20px) 16px calc(var(--tab-h) + env(safe-area-inset-bottom, 0px) + 16px);
+  /* In a regular Safari tab (not installed as a standalone PWA), env(safe-area-inset-top)
+     reports 0 — Safari's own chrome is assumed to handle the notch/Dynamic Island. But
+     the Dynamic Island is a fixed OS overlay at a fixed physical position on screen; with
+     only 20px of top padding, page content (e.g. the page title) can land right in that
+     band and visually collide with it. Floor this the same way the standalone override
+     below does, just with a smaller minimum since Safari's address bar already gives some
+     clearance on its own. */
+  padding: max(calc(env(safe-area-inset-top, 0px) + 20px), 54px) 16px calc(var(--tab-h) + env(safe-area-inset-bottom, 0px) + 16px);
   -webkit-overflow-scrolling: touch;
 }
 
