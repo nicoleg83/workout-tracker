@@ -210,16 +210,16 @@ function resetExerciseOrder() {
 }
 
 // ── Toast ────────────────────────────────────────────────────────
-function toast(msg, type = '') {
+function toast(msg, type = '', duration = 1100) {
   const el = document.getElementById('toast');
   el.textContent = msg;
   el.className = `show ${type}`;
   clearTimeout(toastTimeout);
   // Each new toast (e.g. back-to-back "New PR" toasts across consecutive sets)
   // resets this clock, so several quick completions used to keep one banner
-  // visibly hanging around the whole time. Shorter duration makes that far less
-  // noticeable while keeping it readable for a single toast.
-  toastTimeout = setTimeout(() => { el.className = ''; }, 1100);
+  // visibly hanging around the whole time. Shorter default duration makes that
+  // far less noticeable while keeping it readable for a single toast.
+  toastTimeout = setTimeout(() => { el.className = ''; }, duration);
 }
 function clearToast() {
   clearTimeout(toastTimeout);
@@ -596,7 +596,7 @@ function checkPR(exerciseId, weight, reps) {
     // the app got backgrounded/killed mid-workout (common on a phone) and got
     // resumed later, even though the PR itself was correctly recorded.
     saveSessionMeta(false);
-    toast(`New PR — ${name} 🏆`, 'success');
+    toast(`New PR — ${name} 🏆`, 'success', 2500);
     haptic([10, 60, 20]);
   }
 }
