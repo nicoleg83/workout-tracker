@@ -42,16 +42,17 @@ body {
 .view {
   flex: 1;
   overflow-y: auto;
-  /* env(safe-area-inset-top) is unreliable across browsers for how much the
-     Dynamic Island actually overlaps page content in a plain browser tab —
-     it reports 0 in Chrome/Safari on iOS (assuming their own chrome handles
-     it), but the Island's physical screen position doesn't move, and how much
-     it actually overlaps varies by browser and toolbar state. Rather than
-     chase per-browser/per-mode measurements, use one generous fixed floor
-     everywhere (installed app or any browser tab) — a bit more empty space
-     at the top is a much smaller cost than the title colliding with it. */
-  padding: max(calc(env(safe-area-inset-top, 0px) + 20px), 92px) 16px calc(var(--tab-h) + env(safe-area-inset-bottom, 0px) + 16px);
+  padding: calc(env(safe-area-inset-top, 0px) + 20px) 16px calc(var(--tab-h) + env(safe-area-inset-bottom, 0px) + 16px);
   -webkit-overflow-scrolling: touch;
+}
+
+/* Installed standalone PWA: env(safe-area-inset-top) can report 0 even on
+   notched/Dynamic Island devices. Floor it so the header always clears the
+   notch. Scoped to the installed app — a plain browser tab already gets
+   correct clearance from the browser's own chrome. */
+@media (display-mode: standalone) {
+  .view { padding-top: max(calc(env(safe-area-inset-top, 0px) + 20px), 74px); }
+  #sync-dot { top: max(calc(env(safe-area-inset-top, 0px) - 4px), 46px); }
 }
 
 /* ── Tab bar ── */
@@ -582,11 +583,18 @@ body {
 /* ── Toast ── */
 #toast {
   position: fixed;
-  /* Guarantee the toast clears the notch / Dynamic Island even when
-     env(safe-area-inset-top) resolves to 0 (e.g. in-browser, not standalone). */
   top: max(110px, calc(env(safe-area-inset-top, 0px) + 60px));
   left: 50%;
-  transform: translateX(-50%) translateY(-80px);
+  transform: translateX(-50%) translateY(-12px);
+  /* This used to be hidden via translateY(-80px) alone, on top of a top:110px
+     base position — netting out to 30px from the top, still inside the
+     viewport. An empty rounded box with no text was sitting there permanently
+     on every screen, on every device (that's the "pill" that looked like it
+     was overlapping the notch — nothing to do with notches/safe-area at all).
+     opacity+pointer-events is a hard guarantee of invisibility that doesn't
+     depend on getting an offset calculation right. */
+  opacity: 0;
+  pointer-events: none;
   background: var(--bg2);
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -594,11 +602,11 @@ body {
   font-size: 14px;
   font-weight: 600;
   z-index: 200;
-  transition: transform 0.25s ease;
+  transition: transform 0.25s ease, opacity 0.25s ease;
   white-space: nowrap;
   box-shadow: 0 4px 20px rgba(0,0,0,0.4);
 }
-#toast.show { transform: translateX(-50%) translateY(0); }
+#toast.show { transform: translateX(-50%) translateY(0); opacity: 1; pointer-events: auto; }
 #toast.success { border-color: var(--green); color: var(--green); }
 #toast.error { border-color: #ef4444; color: #ef4444; }
 
@@ -609,7 +617,7 @@ body {
 #sync-dot {
   width: 44px; height: 44px;
   position: fixed;
-  top: max(calc(env(safe-area-inset-top, 0px) - 4px), 60px); right: -2px;
+  top: calc(env(safe-area-inset-top, 0px) - 4px); right: -2px;
   z-index: 150;
   display: flex;
   align-items: center;
