@@ -378,10 +378,19 @@ async function loadSessions() {
     try {
       const sessions = await Supabase.getSessions();
       const remoteIds = new Set(sessions.map(s => s.id));
-      // Remove sessions deleted on another device (bulkPut only adds/updates, never removes)
+      // Remove sessions deleted on another device (bulkPut only adds/updates, never removes).
+      // "Missing from remote" only means "actually deleted elsewhere" once nothing for that
+      // session is still waiting to sync — otherwise a session that saved locally but hasn't
+      // pushed yet (flaky connection, failed request) looks identical to a cross-device delete
+      // and gets wiped from this device too, permanently losing it. Never delete a session that
+      // still has a queued pending_sync write.
+      const pending = await DB.getAll('pending_sync');
+      const pendingSessionIds = new Set(
+        pending.map(p => (p.table === 'sessions' ? p.payload?.id : p.payload?.session_id)).filter(Boolean)
+      );
       const cached = await DB.getAll('sessions');
       for (const s of cached) {
-        if (s.user_id === state.user?.id && !remoteIds.has(s.id)) {
+        if (s.user_id === state.user?.id && !remoteIds.has(s.id) && !pendingSessionIds.has(s.id)) {
           await DB.del('sessions', s.id);
           const logs = await DB.getAll('set_logs', 'session_id', s.id);
           for (const l of logs) await DB.del('set_logs', l.id);
