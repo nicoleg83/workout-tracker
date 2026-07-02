@@ -1280,6 +1280,11 @@ body {
   width: 100%;
   overflow: hidden;
   border-radius: 10px;
+  /* .exercise-row's own margin-bottom can't collapse out through this box because
+     overflow:hidden establishes a new block formatting context — the browser keeps
+     that margin as real height inside the wrap instead, which let the delete button
+     (top:0/bottom:0) bleed a red strip into the gap. Move the spacing here instead. */
+  margin-bottom: 8px;
 }
 .ex-swipe-delete {
   position: absolute;
@@ -1309,6 +1314,7 @@ body {
   position: relative;
   z-index: 1;
   width: 100%;
+  margin-bottom: 0;
   background: var(--bg2);
   transition: none;
 }
