@@ -123,20 +123,30 @@ function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g,
     c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
 }
-// Bar-based exercises get a saved "bar weight" reference field.
+// Bar-based exercises get a saved "bar weight" reference field, synced via
+// Supabase's exercises row (like every other catalog field) so it survives
+// localStorage clears / PWA reinstalls the same way weight/reps history does.
 function usesBar(ex) { return /bar/i.test(ex?.equipment || ''); }
-function barWeightKey(ex) { return `wt_barweight_${ex.image_key || ex.id}`; }
+function legacyBarWeightKey(ex) { return `wt_barweight_${ex.image_key || ex.id}`; }
 function getBarWeight(ex) {
-  try { return localStorage.getItem(barWeightKey(ex)) || ''; } catch (_) { return ''; }
+  if (!ex) return '';
+  if (ex.bar_weight_lbs != null) return String(ex.bar_weight_lbs);
+  // One-time migration from the old localStorage-only version of this feature.
+  try {
+    const legacy = localStorage.getItem(legacyBarWeightKey(ex));
+    if (legacy) { saveBarWeight(ex.id, legacy); return legacy; }
+  } catch (_) {}
+  return '';
 }
 function saveBarWeight(exId, value) {
-  const ex = state.sessionExercises.find(e => e.id === exId) || state.exercises.find(e => e.id === exId);
-  if (!ex) return;
-  try {
-    const v = String(value).trim();
-    if (v) localStorage.setItem(barWeightKey(ex), v);
-    else localStorage.removeItem(barWeightKey(ex));
-  } catch (_) {}
+  const targets = [state.sessionExercises, state.exercises].flatMap(list => list.filter(e => e.id === exId));
+  if (!targets.length) return;
+  const v = String(value).trim();
+  const num = v ? parseFloat(v) : null;
+  const barWeight = (num != null && !isNaN(num)) ? num : null;
+  for (const ex of targets) ex.bar_weight_lbs = barWeight;
+  persistExercise(targets[0]);
+  try { localStorage.removeItem(legacyBarWeightKey(targets[0])); } catch (_) {}
 }
 
 // Assisted exercises (e.g. assisted pull-ups): LOWER weight = better, so PRs
@@ -1483,7 +1493,7 @@ function addExerciseToGroup(exId, supersetId) {
 // ── Routine editing: persistence to the exercises catalog ────────────
 // Supabase `exercises` columns (note: `muscles` is NOT a column — it lives in
 // the bundled EXERCISES constant only, so we must never send it in a payload).
-const EXERCISE_COLUMNS = ['id','day','section','name','equipment','weight_range','sets_target','reps_target','instructions','image_key','superset_group','sort_order'];
+const EXERCISE_COLUMNS = ['id','day','section','name','equipment','weight_range','sets_target','reps_target','instructions','image_key','superset_group','sort_order','bar_weight_lbs'];
 function toExerciseRow(ex) {
   const row = {};
   for (const k of EXERCISE_COLUMNS) if (ex[k] !== undefined) row[k] = ex[k];

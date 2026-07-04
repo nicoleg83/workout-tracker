@@ -83,3 +83,63 @@ describe('weight set-row input (buildSetRow)', () => {
     expect(repsInputHtml).toContain('inputmode="numeric"');
   });
 });
+
+describe('bar weight reference (Supabase-backed, not localStorage-only)', () => {
+  let app;
+  const ezBarCurl = {
+    id: 'ex-ez-bar-curl', day: 'Day 2', section: 'Warmup + core',
+    name: 'EZ Bar Curl', image_key: 'ez-bar-curl', equipment: 'EZ Bar',
+    sets_target: 3, reps_target: '10', bar_weight_lbs: null,
+  };
+
+  beforeEach(() => {
+    app = loadApp();
+    app.state.exercises = [{ ...ezBarCurl }];
+    app.state.sessionExercises = [{ ...ezBarCurl }];
+    app.DB.put = async () => {};
+    app.DB.queueSync = async () => {};
+  });
+
+  it('reads the saved value straight off the exercise row', () => {
+    app.state.exercises[0].bar_weight_lbs = 25;
+    expect(app.getBarWeight(app.state.exercises[0])).toBe('25');
+  });
+
+  it('persists to the exercises row, independent of localStorage', () => {
+    app.saveBarWeight('ex-ez-bar-curl', '25');
+
+    // Old bug: bar weight lived ONLY in localStorage, so a PWA reinstall or
+    // Safari data purge silently wiped it. Clearing it here must not matter.
+    app.localStorage.clear();
+
+    expect(app.getBarWeight(app.state.exercises[0])).toBe('25');
+  });
+
+  it('updates every in-memory copy of the exercise (session + catalog)', () => {
+    app.saveBarWeight('ex-ez-bar-curl', '25');
+    expect(app.state.exercises[0].bar_weight_lbs).toBe(25);
+    expect(app.state.sessionExercises[0].bar_weight_lbs).toBe(25);
+  });
+
+  it('clears the value when the field is emptied', () => {
+    app.state.exercises[0].bar_weight_lbs = 25;
+    app.state.sessionExercises[0].bar_weight_lbs = 25;
+    app.saveBarWeight('ex-ez-bar-curl', '');
+    expect(app.getBarWeight(app.state.exercises[0])).toBe('');
+  });
+
+  it('one-time migrates a legacy localStorage value onto the exercise row', () => {
+    app.localStorage.setItem('wt_barweight_ez-bar-curl', '20');
+
+    const got = app.getBarWeight(app.state.exercises[0]);
+
+    expect(got).toBe('20');
+    expect(app.state.exercises[0].bar_weight_lbs).toBe(20);
+    expect(app.localStorage.getItem('wt_barweight_ez-bar-curl')).toBeNull();
+  });
+
+  it('includes bar_weight_lbs in the Supabase sync payload', () => {
+    const ex = { ...ezBarCurl, bar_weight_lbs: 25 };
+    expect(app.toExerciseRow(ex)).toMatchObject({ bar_weight_lbs: 25 });
+  });
+});
