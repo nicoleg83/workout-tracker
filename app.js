@@ -2125,7 +2125,7 @@ function renderWorkout() {
           <div class="drag-handle">⠿</div>
           <div class="superset-card-thumb">${thumb}</div>
           <div class="superset-card-ex-info">
-            <div class="superset-card-ex-name">${ex.name}</div>
+            <div class="superset-card-ex-name">${esc(ex.name)}</div>
             <div class="superset-card-ex-meta">${ex.sets_target}×${ex.reps_target}</div>
           </div>
           <div class="superset-card-ex-status">${statusEl}</div>
@@ -2169,7 +2169,7 @@ function renderWorkout() {
               : `<span style="font-size:13px;color:var(--text3)">${completed}/${logs.length}</span>`);
 
         const meta = isNoteOnly
-          ? (note ? `<div class="exercise-row-meta" style="color:var(--text3);font-style:italic;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:160px">${note}</div>` : '<div class="exercise-row-meta">Tap to add notes</div>')
+          ? (note ? `<div class="exercise-row-meta" style="color:var(--text3);font-style:italic;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:160px">${esc(note)}</div>` : '<div class="exercise-row-meta">Tap to add notes</div>')
           : `<div class="exercise-row-meta">${ex.sets_target}×${ex.reps_target}</div>`;
 
         const lastSets = (state.lastLogs[ex.id] || []).filter(s => s.completed);
@@ -2194,7 +2194,7 @@ function renderWorkout() {
           <div class="drag-handle">⠿</div>
           <div class="exercise-row-thumb">${thumb}</div>
           <div class="exercise-row-info">
-            <div class="exercise-row-name">${ex.name}</div>
+            <div class="exercise-row-name">${esc(ex.name)}</div>
             ${meta}
             ${lastHint}
           </div>
@@ -2239,13 +2239,13 @@ function renderExerciseDetail() {
 
   // Equipment chips
   const equipChips = ex.equipment
-    ? ex.equipment.split(',').map(e => `<span class="tag">${e.trim()}</span>`).join('')
+    ? ex.equipment.split(',').map(e => `<span class="tag">${esc(e.trim())}</span>`).join('')
     : '';
 
   // Editable name for custom exercises
   const nameEl = ex._custom
-    ? `<input class="detail-name-input" value="${ex.name}" data-ex-id="${ex.id}" placeholder="Exercise name" />`
-    : `<div class="page-title" style="font-size:18px">${ex.name}</div>`;
+    ? `<input class="detail-name-input" value="${esc(ex.name)}" data-ex-id="${ex.id}" placeholder="Exercise name" />`
+    : `<div class="page-title" style="font-size:18px">${esc(ex.name)}</div>`;
 
   let mediaEl = '';
   if (!isNoteOnly && ex.image_key) mediaEl = getExerciseMedia(ex.image_key);
@@ -2312,7 +2312,7 @@ function renderExerciseDetail() {
   // Notes textarea (always shown)
   const notesCard = `<div class="card">
     <div class="detail-section-label">Notes</div>
-    <textarea class="notes-textarea" data-ex-id="${ex.id}" placeholder="Form cues, how it felt, adjustments…" rows="3">${note}</textarea>
+    <textarea class="notes-textarea" data-ex-id="${ex.id}" placeholder="Form cues, how it felt, adjustments…" rows="3">${esc(note)}</textarea>
   </div>`;
 
   // Bar weight reference (only for bar-based exercises) — saved for next time.
@@ -2518,7 +2518,7 @@ function renderSupersetDetail() {
           <div class="ss-ex-thumb-wrap" data-ss-drill-ex="${ex.id}" style="display:flex;align-items:center;gap:10px;flex:1;min-width:0;cursor:pointer;-webkit-tap-highlight-color:transparent">
             <div class="ss-ex-thumb">${thumb}</div>
             <div class="ss-ex-info">
-              <div class="ss-ex-name">${ex.name}</div>
+              <div class="ss-ex-name">${esc(ex.name)}</div>
               <div class="ss-ex-meta">${ex.sets_target}×${ex.reps_target}</div>
               <div class="ss-ex-drill-hint">Details ›</div>
             </div>
@@ -2849,7 +2849,7 @@ function renderProgress() {
         <div class="prog-row" data-prog-ex="${ex.id}">
           <div class="prog-thumb">${thumb}</div>
           <div class="prog-info">
-            <div class="prog-name">${ex.name}</div>
+            <div class="prog-name">${esc(ex.name)}</div>
             <div class="prog-stats">
               <div class="prog-stat">
                 <div class="prog-stat-label">Last</div>
@@ -3075,7 +3075,7 @@ function renderProgressExercise() {
       <button class="back-btn" aria-label="Back" onclick="navigateTo('progress', {}, 'back')">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
       </button>
-      <div class="page-title" style="font-size:18px">${ex.name}</div>
+      <div class="page-title" style="font-size:18px">${esc(ex.name)}</div>
     </div>
     ${mediaHtml}
     ${muscleChipsHtml}

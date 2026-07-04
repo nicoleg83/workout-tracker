@@ -143,3 +143,67 @@ describe('bar weight reference (Supabase-backed, not localStorage-only)', () => 
     expect(app.toExerciseRow(ex)).toMatchObject({ bar_weight_lbs: 25 });
   });
 });
+
+// Regression: unescaped user text (custom exercise names, notes) in
+// renderExerciseDetail — found by /qa on 2026-07-04. exercise names/notes
+// are user-typed free text (custom exercises are user-renamed, notes are
+// free-form), so rendering them straight into innerHTML without esc()
+// breaks display (or worse) whenever the text contains "<", "&", or a
+// stray closing tag. Every other render site in this file already used
+// esc() for the same fields; these two were the odd ones out.
+describe('exercise name / notes escaping (renderExerciseDetail)', () => {
+  const baseSetup = (app, ex, notes = {}) => {
+    app.state.detailExercise = ex;
+    app.state.setLogs = { [ex.id]: [] };
+    app.state.skipped = new Set();
+    app.state.exerciseNotes = notes;
+    app.state.sessionExercises = [ex];
+    app.state.exerciseTimer = { active: false, exerciseId: null, elapsed: 0 };
+  };
+
+  it('escapes a custom exercise name in the detail page title / rename input', () => {
+    const app = loadApp();
+    const dangerousName = 'Curl<img src=x onerror=alert(1)>';
+    const ex = {
+      id: 'custom-1', name: dangerousName, day: 'Day 2', section: 'Custom',
+      sets_target: 3, reps_target: '10', equipment: '', instructions: [],
+      image_key: null, superset_group: null, sort_order: 9000, _custom: true,
+    };
+    baseSetup(app, ex);
+
+    const html = app.renderExerciseDetail();
+
+    expect(html).not.toContain(dangerousName);
+    expect(html).toContain('&lt;img src=x onerror=alert(1)&gt;');
+  });
+
+  it('escapes exercise notes in the notes textarea', () => {
+    const app = loadApp();
+    const dangerousNote = 'felt good </textarea><script>bad</script> today';
+    const ex = {
+      id: 'ex-1', name: 'Bench Press', day: 'Day 1', section: 'Main',
+      sets_target: 3, reps_target: '10', equipment: 'Barbell', instructions: [],
+      image_key: 'bench-press', superset_group: null, sort_order: 1,
+    };
+    baseSetup(app, ex, { [ex.id]: dangerousNote });
+
+    const html = app.renderExerciseDetail();
+
+    expect(html).not.toContain('</textarea><script>');
+  });
+
+  it('escapes a user-entered equipment value in the equipment chips', () => {
+    const app = loadApp();
+    const ex = {
+      id: 'ex-2', name: 'Cable Crunch', day: 'Library', section: '',
+      sets_target: 3, reps_target: '10', equipment: '<b>Cable Machine</b>',
+      instructions: [], image_key: null, superset_group: null, sort_order: 0,
+    };
+    baseSetup(app, ex);
+
+    const html = app.renderExerciseDetail();
+
+    expect(html).not.toContain('<b>Cable Machine</b>');
+    expect(html).toContain('&lt;b&gt;Cable Machine&lt;/b&gt;');
+  });
+});
