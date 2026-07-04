@@ -242,8 +242,11 @@ body {
   transition: border-color 0.15s;
 }
 .exercise-row:active { border-color: var(--pink); }
-.exercise-row.done { opacity: 0.5; }
-.exercise-row.skipped { opacity: 0.4; }
+/* Dim children, not the row itself — the row sits over the swipe-delete
+   button (.ex-swipe-wrap), and opacity on the row's own opaque background
+   would let that button bleed through even with no swipe in progress. */
+.exercise-row.done > * { opacity: 0.5; }
+.exercise-row.skipped > * { opacity: 0.4; }
 
 .exercise-row-thumb {
   width: 56px; height: 56px;

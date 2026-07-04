@@ -586,6 +586,41 @@ async function loadProgressData() {
     if (isBetter) state.prCache[ex.id] = best;
   }
 
+  // Cross-day last session: exercises sharing the same image_key share
+  // whichever day most recently logged it (mirrors the PR merge above).
+  const lastByKey = {};
+  for (const [exId, entry] of Object.entries(state.lastCache)) {
+    const ex = state.exercises.find(e => e.id === exId);
+    const key = ex?.image_key;
+    if (!key) continue;
+    if (!lastByKey[key] || entry.date > lastByKey[key].date) lastByKey[key] = entry;
+  }
+  for (const ex of state.exercises) {
+    const key = ex?.image_key;
+    if (!key || !lastByKey[key]) continue;
+    const local = state.lastCache[ex.id];
+    if (!local || lastByKey[key].date > local.date) state.lastCache[ex.id] = lastByKey[key];
+  }
+
+  // Cross-day history: same idea, merged and re-sorted so Progress charts
+  // for a shared exercise show sessions logged under any day.
+  const historyByKey = {};
+  for (const [exId, hist] of Object.entries(state.historyCache)) {
+    const ex = state.exercises.find(e => e.id === exId);
+    const key = ex?.image_key;
+    if (!key || !hist.length) continue;
+    if (!historyByKey[key]) historyByKey[key] = [];
+    historyByKey[key].push(...hist);
+  }
+  for (const key of Object.keys(historyByKey)) {
+    historyByKey[key].sort((a, b) => b.date.localeCompare(a.date));
+  }
+  for (const ex of state.exercises) {
+    const key = ex?.image_key;
+    if (!key || !historyByKey[key]) continue;
+    state.historyCache[ex.id] = historyByKey[key];
+  }
+
   state.progressLoaded = true;
 }
 
@@ -2375,7 +2410,7 @@ function buildSetRow(exerciseId, i, s) {
     <div class="set-num">${i + 1}</div>
     <div class="set-input-wrap ${s.completed?'completed':''}">
       <button class="adj-btn" data-ex-id="${eid}" data-set-idx="${i}" data-field="w" data-dir="minus" data-step="5">−</button>
-      <input class="set-input" type="text" inputmode="decimal" placeholder="lbs"
+      <input class="set-input" type="text" placeholder="lbs"
         value="${wVal}" data-ex-id="${eid}" data-set-idx="${i}" data-field="w" />
       <button class="adj-btn" data-ex-id="${eid}" data-set-idx="${i}" data-field="w" data-dir="plus" data-step="5">+</button>
     </div>
