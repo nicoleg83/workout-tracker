@@ -1191,6 +1191,16 @@ body {
 }
 .section-rename-btn:active { color: var(--pink); }
 
+.section-dissolve-btn {
+  background: none; border: none; color: var(--text3);
+  padding: 4px; cursor: pointer; border-radius: 4px;
+  display: inline-flex; align-items: center;
+  -webkit-tap-highlight-color: transparent;
+  flex-shrink: 0; margin-left: 2px;
+  transition: color 0.15s;
+}
+.section-dissolve-btn:active { color: #e53935; }
+
 /* ── Session history inline note editing ── */
 .sdet-note-edit {
   display: block;

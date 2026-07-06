@@ -144,6 +144,55 @@ describe('bar weight reference (Supabase-backed, not localStorage-only)', () => 
   });
 });
 
+// Regression: non-superset (named or heading-less) sections had no way to
+// delete/dissolve the heading — only rename. Supersets already had "Ungroup
+// all exercises" via the ⋮ menu; dissolveSection is the equivalent for plain
+// sections (drop the heading, merge exercises into the flat list).
+describe('dissolveSection', () => {
+  const warmup1 = {
+    id: 'ex-warmup-1', day: 'Day 1', section: 'Warmup', name: 'Jumping Jacks',
+    sets_target: 3, reps_target: '20', equipment: '', instructions: [],
+    image_key: null, superset_group: null, sort_order: 0,
+  };
+  const warmup2 = {
+    id: 'ex-warmup-2', day: 'Day 1', section: 'Warmup', name: 'High Knees',
+    sets_target: 3, reps_target: '20', equipment: '', instructions: [],
+    image_key: null, superset_group: null, sort_order: 1,
+  };
+  const mainLift = {
+    id: 'ex-main-1', day: 'Day 1', section: 'Main', name: 'Squat',
+    sets_target: 5, reps_target: '5', equipment: 'Barbell', instructions: [],
+    image_key: null, superset_group: null, sort_order: 2,
+  };
+
+  it('clears the section on every exercise in that section during an active session', () => {
+    const app = loadApp();
+    app.state.view = 'workout';
+    app.state.sessionExercises = [{ ...warmup1 }, { ...warmup2 }, { ...mainLift }];
+
+    app.dissolveSection('Warmup');
+
+    expect(app.state.sessionExercises.find(e => e.id === 'ex-warmup-1').section).toBe('');
+    expect(app.state.sessionExercises.find(e => e.id === 'ex-warmup-2').section).toBe('');
+    expect(app.state.sessionExercises.find(e => e.id === 'ex-main-1').section).toBe('Main');
+  });
+
+  it('clears the section on the edit-day draft and marks it dirty', () => {
+    const app = loadApp();
+    app.state.view = 'edit-day';
+    app.state.editDay = 'Day 1';
+    app.state.editDirty = false;
+    app.state.editDraft = [{ ...warmup1 }, { ...warmup2 }, { ...mainLift }];
+
+    app.dissolveSection('Warmup');
+
+    expect(app.state.editDraft.find(e => e.id === 'ex-warmup-1').section).toBe('');
+    expect(app.state.editDraft.find(e => e.id === 'ex-warmup-2').section).toBe('');
+    expect(app.state.editDraft.find(e => e.id === 'ex-main-1').section).toBe('Main');
+    expect(app.state.editDirty).toBe(true);
+  });
+});
+
 // Regression: unescaped user text (custom exercise names, notes) in
 // renderExerciseDetail — found by /qa on 2026-07-04. exercise names/notes
 // are user-typed free text (custom exercises are user-renamed, notes are

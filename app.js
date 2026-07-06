@@ -1385,6 +1385,17 @@ function ungroupSuperset(supersetId) {
   renderView();
 }
 
+// Named (non-superset) section's equivalent of "Ungroup all exercises" — drop
+// the heading and merge its exercises back into the flat, heading-less list.
+function dissolveSection(sectionName) {
+  const changed = [];
+  routineList().forEach(ex => {
+    if (ex.section === sectionName) { ex.section = ''; changed.push(ex); }
+  });
+  if (state.view === 'edit-day') markEditDirty();
+  renderView();
+}
+
 function removeExerciseFromSuperset(exId) {
   document.querySelectorAll('.ss-dropdown').forEach(el => el.remove());
   const list = routineList();
@@ -1683,6 +1694,7 @@ function renderEditDay() {
           <span class="section-drag-handle">⠿</span>
           <span class="section-name-label">${esc(displaySection)}</span>
           <button class="section-rename-btn" data-rename-section="${esc(section)}" aria-label="Rename section"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>
+          <button class="section-dissolve-btn" data-dissolve-section="${esc(section)}" aria-label="Delete section"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M18 6l-12 12M6 6l12 12"/></svg></button>
         </div>`;
       html += `<div class="section-group" data-section="${esc(section)}" data-superset-id="">
         ${label}
@@ -2140,6 +2152,7 @@ function renderWorkout() {
           <span class="section-drag-handle">⠿</span>
           <span class="section-name-label">${displaySection}</span>
           ${state.activeSession ? `<button class="section-rename-btn" data-rename-section="${section}" aria-label="Rename section"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg></button>` : ''}
+          ${state.activeSession ? `<button class="section-dissolve-btn" data-dissolve-section="${section}" aria-label="Delete section"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M18 6l-12 12M6 6l12 12"/></svg></button>` : ''}
         </div>`;
       html += `<div class="section-group" data-section="${section}">
         ${sectionLabel}
@@ -3340,7 +3353,11 @@ function bindViewEvents() {
 
     sectionSortEl.addEventListener('touchstart', e => {
       const wrap = e.target.closest('[data-swipe-wrap]');
-      if (!wrap) { closeAllSwipes(); return; }
+      // A touch starting on the drag handle is an explicit drag intent — never
+      // let the swipe recognizer compete with SortableJS's touch-hold delay for
+      // it (this is why superset rows, which have no swipe-wrap at all, could
+      // always drag fine: they never entered this recognizer to begin with).
+      if (!wrap || e.target.closest('.drag-handle')) { closeAllSwipes(); return; }
       swipeStartX = e.touches[0].clientX;
       swipeStartY = e.touches[0].clientY;
       activeWrap = wrap;
@@ -3514,6 +3531,14 @@ function bindViewEvents() {
     btn.addEventListener('click', e => {
       e.stopPropagation();
       startRenameSection(btn.dataset.renameSection);
+    });
+  });
+
+  // Section delete (dissolve) button
+  view.querySelectorAll('.section-dissolve-btn[data-dissolve-section]').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      dissolveSection(btn.dataset.dissolveSection);
     });
   });
 
