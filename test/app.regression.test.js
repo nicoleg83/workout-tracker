@@ -66,6 +66,42 @@ describe('cross-day exercise history (loadProgressData)', () => {
   });
 });
 
+// Regression: resuming an in-progress session (app reload mid-workout) left
+// state.lastLogs empty, so the workout view showed no prefill/PR history even
+// though History/Progress (fed by separate state) were unaffected. Found
+// 2026-07-07. Root cause: loadLastLogs()'s "use the session before the
+// current one" fallback was dead code — it detected the in-progress session
+// but never actually stepped back to the prior one.
+describe('resumed-session prefill (loadLastLogs)', () => {
+  it('falls back to the prior session for the day instead of the empty in-progress one', async () => {
+    const app = loadApp();
+    app.state.sessions = [
+      { id: 'sess-today', day: 'Push', date: '2026-07-07' },
+      { id: 'sess-yesterday', day: 'Push', date: '2026-07-06' },
+    ];
+    app.state.activeSession = { id: 'sess-today', day: 'Push', date: '2026-07-07' };
+    app.Supabase.getSetLogs = async (sessionId) =>
+      sessionId === 'sess-yesterday'
+        ? [{ id: 'log-1', session_id: 'sess-yesterday', exercise_id: 'ex-bench', set_number: 1, weight_lbs: 135, reps: 8, completed: true }]
+        : [];
+
+    await app.loadLastLogs('Push');
+
+    expect(app.state.lastLogs['ex-bench']).toBeDefined();
+    expect(app.state.lastLogs['ex-bench'][0].weight_lbs).toBe(135);
+  });
+
+  it('leaves lastLogs empty when the in-progress session is the only one for the day', async () => {
+    const app = loadApp();
+    app.state.sessions = [{ id: 'sess-today', day: 'Push', date: '2026-07-07' }];
+    app.state.activeSession = { id: 'sess-today', day: 'Push', date: '2026-07-07' };
+
+    await app.loadLastLogs('Push');
+
+    expect(app.state.lastLogs).toEqual({});
+  });
+});
+
 describe('weight set-row input (buildSetRow)', () => {
   it('does not restrict the weight field to a numeric-only keyboard', () => {
     const app = loadApp();
@@ -207,7 +243,6 @@ describe('exercise name / notes escaping (renderExerciseDetail)', () => {
     app.state.skipped = new Set();
     app.state.exerciseNotes = notes;
     app.state.sessionExercises = [ex];
-    app.state.exerciseTimer = { active: false, exerciseId: null, elapsed: 0 };
   };
 
   it('escapes a custom exercise name in the detail page title / rename input', () => {

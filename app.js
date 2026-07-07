@@ -12,7 +12,6 @@ const state = {
   lastLogs: {},
   skipped: new Set(),
   exerciseNotes: {},
-  exerciseTimer: { active: false, exerciseId: null, elapsed: 0 },
   view: 'home',
   detailExercise: null,
   historySession: null,
@@ -36,7 +35,6 @@ const state = {
   loading: false,
   seeding: false,
 };
-let exerciseTimerInterval = null;
 let toastTimeout = null;
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -458,10 +456,10 @@ async function loadLastLogs(day) {
     .sort((a, b) => b.date.localeCompare(a.date));
 
   if (!sessionsByDay.length) return;
-  const lastSession = sessionsByDay[0];
+  let lastSession = sessionsByDay[0];
   if (state.activeSession && lastSession.id === state.activeSession.id) {
     if (sessionsByDay.length < 2) return;
-    // Use the one before current
+    lastSession = sessionsByDay[1];
   }
 
   let logs;
@@ -938,42 +936,6 @@ function skipExercise(exerciseId) {
     state.skipped.add(exerciseId);
   }
   renderView();
-}
-
-function startExerciseTimer(exId) {
-  if (state.exerciseTimer.active && state.exerciseTimer.exerciseId === exId) {
-    stopExerciseTimer();
-    return;
-  }
-  if (state.exerciseTimer.active) stopExerciseTimer();
-  state.exerciseTimer = { active: true, exerciseId: exId, elapsed: 0 };
-  haptic(10);
-  const updateDisplay = () => {
-    const el = document.getElementById('ex-timer-display');
-    const btn = document.getElementById('ex-timer-btn');
-    if (el) {
-      const m = String(Math.floor(state.exerciseTimer.elapsed / 60)).padStart(2, '0');
-      const s = String(state.exerciseTimer.elapsed % 60).padStart(2, '0');
-      el.textContent = `${m}:${s}`;
-      el.style.color = 'var(--pink)';
-    }
-    if (btn) { btn.textContent = 'Stop'; btn.className = 'btn btn-danger'; btn.style.cssText = 'flex:0 0 auto;width:auto;padding:8px 18px'; }
-  };
-  updateDisplay();
-  exerciseTimerInterval = setInterval(() => {
-    state.exerciseTimer.elapsed++;
-    updateDisplay();
-  }, 1000);
-}
-
-function stopExerciseTimer() {
-  clearInterval(exerciseTimerInterval);
-  exerciseTimerInterval = null;
-  state.exerciseTimer.active = false;
-  const el = document.getElementById('ex-timer-display');
-  const btn = document.getElementById('ex-timer-btn');
-  if (el) el.style.color = '';
-  if (btn) { btn.textContent = 'Start'; btn.className = 'btn btn-secondary'; btn.style.cssText = 'flex:0 0 auto;width:auto;padding:8px 18px'; }
 }
 
 // ── Sync ─────────────────────────────────────────────────────────
@@ -2358,9 +2320,6 @@ function renderExerciseDetail() {
   if (inActiveSession && !isSkipped && !isNoteOnly) {
     const timeBased = isTimeBased(ex.id);
     const repsCol = timeBased ? 'Secs' : 'Reps';
-    const timerActive = state.exerciseTimer.active && state.exerciseTimer.exerciseId === ex.id;
-    const timerM = String(Math.floor(state.exerciseTimer.elapsed / 60)).padStart(2, '0');
-    const timerS = String(state.exerciseTimer.elapsed % 60).padStart(2, '0');
     setRows = `
       <div class="time-toggle-row">
         <span class="time-toggle-label">Reps / Secs</span>
@@ -2382,14 +2341,7 @@ function renderExerciseDetail() {
       <div class="btn-row mt8">
         <button class="btn btn-danger" onclick="skipExercise('${ex.id}')">${isSkipped ? 'Unskip' : 'Skip'}</button>
       </div>
-      ${!isNoteOnly && !ex._custom ? `<div class="btn-row mt8"><button class="btn btn-secondary" onclick="showSwapPicker('${ex.id}')">↔ Swap exercise</button></div>` : ''}
-      <div class="ex-timer-card">
-        <div class="ex-timer-label">Exercise Timer</div>
-        <div id="ex-timer-display" class="ex-timer-display">${timerActive ? `${timerM}:${timerS}` : '00:00'}</div>
-        <button id="ex-timer-btn" class="btn ${timerActive ? 'btn-danger' : 'btn-secondary'} ex-timer-btn" onclick="startExerciseTimer('${ex.id}')">
-          ${timerActive ? 'Stop' : 'Start'}
-        </button>
-      </div>`;
+      ${!isNoteOnly && !ex._custom ? `<div class="btn-row mt8"><button class="btn btn-secondary" onclick="showSwapPicker('${ex.id}')">↔ Swap exercise</button></div>` : ''}`;
   }
 
   const supersetLabel = inSuperset
@@ -3851,6 +3803,7 @@ async function tryResumeSession() {
 
   state.activeSession = session;
   state.activeDay = session.day;
+  await loadLastLogs(session.day);
   state.sessionExercises = sessionExercises;
   state.defaultExerciseIds = sessionExercises.map(e => e.id);
   state.setLogs = setLogs;
