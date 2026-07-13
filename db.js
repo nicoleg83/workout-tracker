@@ -97,10 +97,33 @@ const DB = (() => {
     });
   }
 
-  // Queue a write for later sync
+  // Queue a write for later sync. A newer write to the same row supersedes any
+  // still-queued one (same table + operation + payload id), so an offline
+  // session doesn't pile up dozens of stale snapshots of the same record —
+  // only the latest payload flushes.
   async function queueSync(table, operation, payload) {
+    if (payload?.id) {
+      const pending = await getAll('pending_sync');
+      for (const p of pending) {
+        if (p.table === table && p.operation === operation && p.payload?.id === payload.id) {
+          await del('pending_sync', p.id);
+        }
+      }
+    }
     const id = crypto.randomUUID();
     await put('pending_sync', { id, table, operation, payload, created_at: Date.now(), attempts: 0 });
+  }
+
+  // Drop every queued write belonging to a session (the session row itself and
+  // its set_logs). Used when a never-synced session is discarded so a pending
+  // insert can't resurrect it on the next flush.
+  async function purgePendingForSession(sessionId) {
+    const pending = await getAll('pending_sync');
+    for (const p of pending) {
+      if (p.payload?.id === sessionId || p.payload?.session_id === sessionId) {
+        await del('pending_sync', p.id);
+      }
+    }
   }
 
   // Flush pending_sync to Supabase
@@ -118,6 +141,10 @@ const DB = (() => {
           await Supabase.insert(item.table, item.payload);
         } else if (item.operation === 'update') {
           await Supabase.update(item.table, item.payload);
+        } else if (item.operation === 'delete') {
+          // Deletes used to be fire-and-forget (lost on gym wifi); queued
+          // deletes survive offline and retry like every other write.
+          await Supabase.deleteRecord(item.table, item.payload.id);
         }
         await del('pending_sync', item.id);
       } catch (err) {
@@ -127,5 +154,5 @@ const DB = (() => {
     }
   }
 
-  return { open, getAll, get, put, bulkPut, del, count, queueSync, flushSync };
+  return { open, getAll, get, put, bulkPut, del, count, queueSync, purgePendingForSession, flushSync };
 })();
