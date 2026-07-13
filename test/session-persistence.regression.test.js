@@ -262,6 +262,52 @@ describe('recently deleted sessions (soft delete + recovery)', () => {
   });
 });
 
+describe('save current order as my default (saveSessionAsDefault)', () => {
+  it('removals, additions, order, and supersets all persist into the next session', async () => {
+    const ctx = loadApp();
+    stubDb(ctx);
+    ctx.state.exercises = [
+      ...CATALOG.map(e => ({ ...e })),
+      { id: 'ex-lib', day: 'Library', section: '', name: 'Face Pull', sets_target: 3, reps_target: '', superset_group: null, sort_order: 0, instructions: [], image_key: null },
+    ];
+    ctx.state.user = { id: 'u1' };
+    await ctx.startSession('Day 1');
+
+    // Reshape the session: drop Curl, pull in Face Pull, superset Bench+Row
+    ctx.removeExerciseFromSession('ex-3');
+    ctx.addExistingExerciseToSession('ex-lib');
+    ctx.createNewGroup('ex-1');
+    const groupId = ctx.state.sessionExercises.find(e => e.id === 'ex-1').superset_group;
+
+    ctx.saveSessionAsDefault();
+
+    // Catalog now reflects the session as the new default
+    const byId = Object.fromEntries(ctx.state.exercises.map(e => [e.id, e]));
+    expect(byId['ex-3'].day).toBe('Library');          // removed → Library (was the resurrection bug)
+    expect(byId['ex-lib'].day).toBe('Day 1');          // added → joins the day
+    expect(byId['ex-1'].superset_group).toBe(groupId); // superset saved
+    expect(byId['ex-2'].superset_group).toBe(groupId);
+    expect(byId['ex-1'].sort_order).toBeLessThan(byId['ex-lib'].sort_order);
+
+    // The next session for this day starts from the saved default
+    await ctx.startSession('Day 1');
+    const ids = ctx.state.sessionExercises.map(e => e.id);
+    expect(ids).not.toContain('ex-3');
+    expect(ids).toContain('ex-lib');
+    expect(ctx.state.sessionExercises.find(e => e.id === 'ex-2').superset_group).toBe(groupId);
+  });
+
+  it('leaves everything alone when the confirm dialog is declined', async () => {
+    const ctx = loadApp();
+    stubDb(ctx);
+    await freshSession(ctx);
+    ctx.removeExerciseFromSession('ex-3');
+    ctx.confirm = () => false;
+    ctx.saveSessionAsDefault();
+    expect(ctx.state.exercises.find(e => e.id === 'ex-3').day).toBe('Day 1');
+  });
+});
+
 describe('pending local catalog edits win over a stale server fetch', () => {
   it('overlays still-queued exercise updates onto the fetched rows', async () => {
     const ctx = loadApp();

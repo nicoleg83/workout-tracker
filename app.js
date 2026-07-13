@@ -1663,20 +1663,34 @@ function saveEditDay() {
 }
 
 // From the active workout: persist the current exercise order + grouping as the
-// default for this day. Only real catalog exercises are saved (Warmup/Abs and
-// unsaved custom exercises are skipped).
+// default for this day. The session list IS the new default: exercises added
+// from the Library (or another day) join this day, and day exercises you
+// removed from the session move to your Library (history intact) — previously
+// this only re-ordered survivors, so removed exercises kept their day
+// assignment and reappeared every next session. Warmup/Abs and unsaved custom
+// exercises are skipped (not catalog rows).
 function saveSessionAsDefault() {
   const day = state.activeDay;
   if (!day) return;
-  if (!confirm(`Save this exercise order & grouping as your default for ${day}?`)) return;
+  const sessionIds = new Set(state.sessionExercises.map(se => se.id));
+  const removed = state.exercises.filter(e => e.day === day && !sessionIds.has(e.id));
+  const removedNote = removed.length
+    ? ` ${removed.length} removed exercise${removed.length > 1 ? 's' : ''} will move to your Library.`
+    : '';
+  if (!confirm(`Save this exercise order & grouping as your default for ${day}?${removedNote}`)) return;
   let order = 0;
   state.sessionExercises.forEach(se => {
     const ex = state.exercises.find(e => e.id === se.id);
     if (!ex) return; // synthetic warmup/abs/custom — not in the catalog
     order++;
+    ex.day = day; // adopts Library / cross-day additions into this day
     ex.sort_order = order;
     ex.section = se.section || '';
     ex.superset_group = se.superset_group || null;
+    persistExercise(ex);
+  });
+  removed.forEach(ex => {
+    ex.day = 'Library'; ex.superset_group = null; ex.section = '';
     persistExercise(ex);
   });
   toast('Saved as your default');
