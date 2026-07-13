@@ -22,7 +22,8 @@ create table if not exists sessions (
   date date not null,
   notes text,
   created_at timestamptz default now(),
-  synced_at timestamptz default now()
+  synced_at timestamptz default now(),
+  deleted_at timestamptz  -- soft delete: set = in "Recently deleted", null = live
 );
 
 create table if not exists set_logs (

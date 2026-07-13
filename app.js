@@ -197,7 +197,10 @@ function rebuildSessionExercisesFromDOM() {
       if (ex) newOrder.push(ex);
     });
   });
-  if (newOrder.length) state.sessionExercises = newOrder;
+  if (newOrder.length) {
+    state.sessionExercises = newOrder;
+    saveSessionSnapshotSoon();
+  }
 }
 function resetExerciseOrder() {
   const ids = state.defaultExerciseIds;
@@ -214,12 +217,14 @@ function resetExerciseOrder() {
     }
     return ex;
   }).filter(Boolean);
+  saveSessionSnapshotSoon();
   renderView();
 }
 
 // ── Toast ────────────────────────────────────────────────────────
 function toast(msg, type = '', duration = 1100) {
   const el = document.getElementById('toast');
+  if (!el) return;
   el.textContent = msg;
   el.className = `show ${type}`;
   clearTimeout(toastTimeout);
@@ -250,10 +255,27 @@ async function loadExercises() {
   // Always fetch from Supabase when online so real UUIDs replace any stale local-* cache
   if (navigator.onLine) {
     try {
+      // Push pending local catalog edits up BEFORE fetching — otherwise a
+      // saved order/superset/removal that hasn't flushed yet (flaky gym wifi,
+      // app killed mid-sync) gets overwritten on screen by stale server rows.
+      const pendingBefore = await DB.getAll('pending_sync');
+      if (pendingBefore.some(p => p.table === 'exercises' || p.table === 'routine_days')) {
+        await syncIfOnline();
+      }
       let exs = await Supabase.getExercises();
       if (exs.length === 0) {
         await seedExercises();
         exs = await Supabase.getExercises();
+      }
+      // Local edits that STILL couldn't flush win over the fetched rows —
+      // they'll reach the server on a later flush; showing the pre-edit server
+      // state meanwhile reads as "my changes didn't save."
+      const stillPending = await DB.getAll('pending_sync');
+      for (const p of stillPending) {
+        if (p.table !== 'exercises') continue;
+        const i = exs.findIndex(e => e.id === p.payload?.id);
+        if (p.operation === 'update' && i >= 0) exs[i] = { ...exs[i], ...p.payload };
+        else if (p.operation === 'insert' && i < 0 && p.payload?.id) exs.push(p.payload);
       }
       // Remove any stale local-* entries before caching real UUIDs
       const cached = await DB.getAll('exercises');
@@ -412,7 +434,12 @@ async function loadSessions() {
         pending.map(p => (p.table === 'sessions' ? p.payload?.id : p.payload?.session_id)).filter(Boolean)
       );
       const cached = await DB.getAll('sessions');
+      // The active session may not have ANY queued write yet (it only syncs
+      // after the first completed set) — never mistake it for a cross-device
+      // delete, or resuming a fresh workout wipes it.
+      const activeId = localStorage.getItem('activeWorkoutSessionId');
       for (const s of cached) {
+        if (s.id === activeId) continue;
         if (s.user_id === state.user?.id && !remoteIds.has(s.id) && !pendingSessionIds.has(s.id)) {
           await DB.del('sessions', s.id);
           const logs = await DB.getAll('set_logs', 'session_id', s.id);
@@ -452,7 +479,7 @@ async function loadSessionsLocal() {
 
 async function loadLastLogs(day) {
   const sessionsByDay = state.sessions
-    .filter(s => s.day === day)
+    .filter(s => s.day === day && !s.deleted_at)
     .sort((a, b) => b.date.localeCompare(a.date));
 
   if (!sessionsByDay.length) return;
@@ -518,7 +545,9 @@ async function loadProgressData() {
 
   const completed = allLogs.filter(l => l.completed && l.weight_lbs != null);
   const sessionDateMap = {};
-  for (const s of state.sessions) sessionDateMap[s.id] = s.date;
+  // Soft-deleted sessions keep their logs (for Restore) but stop counting
+  // toward PRs, charts, and last-session prefills.
+  for (const s of state.sessions) { if (!s.deleted_at) sessionDateMap[s.id] = s.date; }
 
   const byEx = {};
   for (const log of completed) {
@@ -667,13 +696,16 @@ function checkPR(exerciseId, weight, reps) {
 }
 
 // ── Init set logs for a session ──────────────────────────────────
+// Every exercise starts with a fixed 3 pre-populated sets (targets are gone
+// from the UI); add/remove sets during the exercise itself as needed.
+const DEFAULT_SET_COUNT = 3;
 function initSetLogs(exercises) {
   state.setLogs = {};
   for (const ex of exercises) {
     if (!ex.sets_target) { state.setLogs[ex.id] = []; continue; }
     const last = state.lastLogs[ex.id] || [];
     const rows = [];
-    for (let i = 0; i < ex.sets_target; i++) {
+    for (let i = 0; i < DEFAULT_SET_COUNT; i++) {
       const prev = last.find(l => l.set_number === i + 1);
       rows.push({
         setNumber: i + 1,
@@ -754,15 +786,21 @@ async function startSession(day) {
   initSetLogs(state.sessionExercises);
 
   await DB.put('sessions', session);
-  await DB.queueSync('sessions', 'insert', session);
-  syncIfOnline();
+  // No Supabase insert yet — the session only syncs once a set is completed
+  // (or it's finished), via saveSessionMeta. Writing the meta locally right
+  // away means notes is never null, so resume can't fall back to rebuilding
+  // the day's default list, and history never mistakes it for a finished one.
+  await saveSessionMeta(false);
 
   state.view = 'workout';
   renderView();
 }
 
-// Snapshot the current session's exercise order, notes, and skipped state
-// into session.notes (JSON) so history can show the full picture.
+// Snapshot the current session's exercise order, grouping, notes, and skipped
+// state into session.notes (JSON) so history and resume show the full picture.
+// Only reaches Supabase once the session is worth keeping (a completed set or
+// an explicit finish) — before that it lives purely on-device, so tapping into
+// a day and backing out never lands an empty session on the server.
 async function saveSessionMeta(finished = false) {
   if (!state.activeSession) return;
   const meta = {
@@ -772,6 +810,7 @@ async function saveSessionMeta(finished = false) {
       id: ex.id,
       name: ex.name,
       section: ex.section || '',
+      superset_group: ex.superset_group || null,
       sets_target: ex.sets_target,
       reps_target: ex.reps_target || '',
       note: state.exerciseNotes[ex.id] || '',
@@ -782,8 +821,32 @@ async function saveSessionMeta(finished = false) {
   const updated = { ...state.activeSession, notes: JSON.stringify(meta) };
   state.activeSession = updated;
   await DB.put('sessions', updated);
-  await DB.queueSync('sessions', 'update', updated);
-  syncIfOnline();
+  const hasCompletedSet = state.sessionExercises.some(ex =>
+    (state.setLogs[ex.id] || []).some(s => s.completed)
+  );
+  if (finished || hasCompletedSet) {
+    // Upsert (insert + merge-duplicates), not PATCH: the row may not exist on
+    // the server yet, and a PATCH against a missing id silently writes nothing.
+    await DB.queueSync('sessions', 'insert', toSessionRow(updated));
+    syncIfOnline();
+  }
+}
+
+// Debounced snapshot for mid-workout mutations (reorder, group, remove, notes)
+// so an iOS PWA kill can't roll the session back to the day's defaults. 400ms
+// coalesces bursts (e.g. several quick drags) into one write.
+let sessionSnapshotTimer = null;
+function saveSessionSnapshotSoon() {
+  if (!state.activeSession) return;
+  clearTimeout(sessionSnapshotTimer);
+  sessionSnapshotTimer = setTimeout(() => saveSessionMeta(false), 400);
+}
+
+// A routine mutation happened in whichever list routineList() points at:
+// mark the edit draft dirty, or snapshot the live session.
+function markRoutineChanged() {
+  if (state.view === 'edit-day') { markEditDirty(); return; }
+  saveSessionSnapshotSoon();
 }
 
 async function finishSession() {
@@ -828,12 +891,16 @@ async function endAndGoHome() {
       // and do NOT remove activeWorkoutSessionId from localStorage
       await saveSessionMeta(false);
     } else {
-      // Truly empty — delete entirely
+      // Truly empty — delete entirely. Purge any queued writes for it FIRST so
+      // a still-pending insert can't resurrect the session on the next flush,
+      // then queue the server delete (survives offline, unlike fire-and-forget).
       localStorage.removeItem('activeWorkoutSessionId');
       const logs = await DB.getAll('set_logs', 'session_id', state.activeSession.id);
       for (const log of logs) await DB.del('set_logs', log.id);
       await DB.del('sessions', state.activeSession.id);
-      try { await Supabase.deleteRecord('sessions', state.activeSession.id); } catch (_) {}
+      await DB.purgePendingForSession(state.activeSession.id);
+      await DB.queueSync('sessions', 'delete', { id: state.activeSession.id });
+      syncIfOnline();
     }
   }
   state.activeSession = null;
@@ -851,13 +918,28 @@ async function endAndGoHome() {
 }
 
 async function cancelSession() {
-  if (!confirm('Cancel this workout? All logged progress will be lost.')) return;
+  const hasLogs = state.activeSession && state.sessionExercises.some(ex =>
+    (state.setLogs[ex.id] || []).some(s => s.completed)
+  );
+  const msg = hasLogs
+    ? 'Cancel this workout? It moves to Recently deleted (in History) for 30 days.'
+    : 'Cancel this workout?';
+  if (!confirm(msg)) return;
   localStorage.removeItem('activeWorkoutSessionId');
   if (state.activeSession) {
-    const logs = await DB.getAll('set_logs', 'session_id', state.activeSession.id);
-    for (const log of logs) await DB.del('set_logs', log.id);
-    await DB.del('sessions', state.activeSession.id);
-    try { await Supabase.deleteRecord('sessions', state.activeSession.id); } catch (_) {}
+    if (hasLogs) {
+      // Logged progress exists — soft-delete so it's recoverable on-device.
+      await softDeleteSession(state.activeSession.id);
+    } else {
+      // Nothing logged — remove entirely, and make sure no queued write
+      // resurrects it.
+      const logs = await DB.getAll('set_logs', 'session_id', state.activeSession.id);
+      for (const log of logs) await DB.del('set_logs', log.id);
+      await DB.del('sessions', state.activeSession.id);
+      await DB.purgePendingForSession(state.activeSession.id);
+      await DB.queueSync('sessions', 'delete', { id: state.activeSession.id });
+      syncIfOnline();
+    }
   }
   state.activeSession = null;
   state.setLogs = {};
@@ -919,6 +1001,10 @@ async function toggleComplete(exerciseId, setIndex) {
     };
     set._logId = log.id;
     await DB.put('set_logs', log);
+    // Queue the session row (upsert) before its set_log: flushSync pushes
+    // sessions first, and the FK on set_logs needs the parent to exist. This
+    // is also the moment the session first becomes worth syncing at all.
+    await saveSessionMeta(false);
     await DB.queueSync('set_logs', 'insert', log);
     syncIfOnline();
     checkPR(exerciseId, weightLbs, log.reps);
@@ -935,6 +1021,7 @@ function skipExercise(exerciseId) {
   } else {
     state.skipped.add(exerciseId);
   }
+  saveSessionSnapshotSoon();
   renderView();
 }
 
@@ -1060,7 +1147,8 @@ function addCustomExercise() {
   const absIdx = state.sessionExercises.findIndex(e => e.name === 'Abs');
   if (absIdx >= 0) state.sessionExercises.splice(absIdx, 0, ex);
   else state.sessionExercises.push(ex);
-  state.setLogs[ex.id] = Array.from({length: ex.sets_target}, (_, i) => ({ setNumber: i+1, weight_lbs: null, reps: null, completed: false, _logId: null }));
+  state.setLogs[ex.id] = Array.from({length: DEFAULT_SET_COUNT}, (_, i) => ({ setNumber: i+1, weight_lbs: null, reps: null, completed: false, _logId: null }));
+  saveSessionSnapshotSoon();
   renderView();
 }
 
@@ -1074,7 +1162,7 @@ function addExistingExerciseToSession(exId) {
   if (absIdx >= 0) state.sessionExercises.splice(absIdx, 0, ex);
   else state.sessionExercises.push(ex);
   const prevSets = state.lastCache?.[exId]?.sets || [];
-  state.setLogs[ex.id] = Array.from({ length: ex.sets_target }, (_, i) => ({
+  state.setLogs[ex.id] = Array.from({ length: DEFAULT_SET_COUNT }, (_, i) => ({
     setNumber: i + 1,
     weight_lbs: prevSets[i]?.weight_lbs ?? null,
     reps: prevSets[i]?.reps ?? null,
@@ -1082,6 +1170,7 @@ function addExistingExerciseToSession(exId) {
     _logId: null,
   }));
   toast(`Added ${ex.name}`);
+  saveSessionSnapshotSoon();
   renderView();
 }
 
@@ -1135,6 +1224,7 @@ function addSet(exerciseId) {
   const prev = (state.lastLogs[exerciseId] || []).find(l => l.set_number === n + 1);
   rows.push({ setNumber: n + 1, weight_lbs: prev ? prev.weight_lbs : null, reps: prev ? prev.reps : null, completed: false, _logId: null });
   haptic(5);
+  saveSessionSnapshotSoon();
   renderView();
 }
 // Remove the last (extra) set. Deletes its persisted log if it was completed.
@@ -1150,6 +1240,7 @@ async function removeLastSet(exerciseId) {
   }
   rows.pop();
   haptic(5);
+  saveSessionSnapshotSoon();
   renderView();
 }
 
@@ -1166,6 +1257,7 @@ function removeExerciseFromSession(exId) {
   state.sessionExercises = state.sessionExercises.filter(e => e.id !== exId);
   delete state.setLogs[exId];
   state.skipped.delete(exId);
+  saveSessionSnapshotSoon();
   renderView();
 }
 
@@ -1219,7 +1311,7 @@ function createNewSection(exId) {
   ex.superset_group = null;
   const name = nextSectionName();
   ex.section = name;
-  if (state.view === 'edit-day') markEditDirty();
+  markRoutineChanged();
   renderView();
   requestAnimationFrame(() => startRenameSection(name));
 }
@@ -1297,7 +1389,7 @@ function renameSuperset(supersetId, newName) {
   routineList().forEach(ex => {
     if (ex.superset_group === supersetId) { ex.section = newName; changed.push(ex); }
   });
-  if (state.view === 'edit-day') markEditDirty();
+  markRoutineChanged();
   renderView();
 }
 
@@ -1327,7 +1419,7 @@ function startRenameSection(sectionName) {
     routineList().forEach(ex => {
       if (ex.section === sectionName) { ex.section = newName; changed.push(ex); }
     });
-    if (state.view === 'edit-day') markEditDirty();
+    markRoutineChanged();
     renderView();
   };
   input.addEventListener('blur', () => setTimeout(save, 120));
@@ -1343,7 +1435,7 @@ function ungroupSuperset(supersetId) {
   routineList().forEach(ex => {
     if (ex.superset_group === supersetId) { ex.superset_group = null; ex.section = ''; changed.push(ex); }
   });
-  if (state.view === 'edit-day') markEditDirty();
+  markRoutineChanged();
   renderView();
 }
 
@@ -1354,7 +1446,7 @@ function dissolveSection(sectionName) {
   routineList().forEach(ex => {
     if (ex.section === sectionName) { ex.section = ''; changed.push(ex); }
   });
-  if (state.view === 'edit-day') markEditDirty();
+  markRoutineChanged();
   renderView();
 }
 
@@ -1371,7 +1463,7 @@ function removeExerciseFromSuperset(exId) {
     remaining[0].superset_group = null;
     remaining[0].section = '';
   }
-  if (state.view === 'edit-day') markEditDirty();
+  markRoutineChanged();
   renderView();
 }
 
@@ -1448,7 +1540,7 @@ function createNewGroup(exId) {
   ex.section = groupName;
   next.superset_group = groupId;
   next.section = groupName;
-  if (state.view === 'edit-day') markEditDirty();
+  markRoutineChanged();
   renderView();
 }
 
@@ -1459,7 +1551,7 @@ function addExerciseToGroup(exId, supersetId) {
   if (!ex || !ref) return;
   ex.superset_group = supersetId;
   ex.section = ref.section;
-  if (state.view === 'edit-day') markEditDirty();
+  markRoutineChanged();
   renderView();
 }
 
@@ -1600,7 +1692,7 @@ function editRow(ex) {
     <div class="exercise-row-thumb">${thumb}</div>
     <div class="exercise-row-info">
       <div class="exercise-row-name">${esc(ex.name)}</div>
-      <div class="exercise-row-meta">${ex.sets_target}×${esc(ex.reps_target || '')}${ex.equipment ? ' · ' + esc(ex.equipment) : ''}</div>
+      <div class="exercise-row-meta">${esc(ex.equipment || '')}</div>
     </div>
     <div class="exercise-row-end" style="gap:6px">
       <button class="ex-group-btn" data-group-ex="${ex.id}" aria-label="Group"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 007.54.54l3-3a5 5 0 00-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 00-7.54-.54l-3 3a5 5 0 007.07 7.07l1.71-1.71"/></svg></button>
@@ -1712,7 +1804,7 @@ function libRow(ex) {
     <div class="exercise-row-thumb">${thumb}</div>
     <div class="exercise-row-info">
       <div class="exercise-row-name">${esc(ex.name)}</div>
-      <div class="exercise-row-meta">${ex.sets_target}×${esc(ex.reps_target || '')}${ex.equipment ? ' · ' + esc(ex.equipment) : ''}</div>
+      <div class="exercise-row-meta">${esc(ex.equipment || '')}</div>
     </div>
     <div class="exercise-row-end"><span style="color:var(--text3);font-size:18px">›</span></div>
   </div>`;
@@ -1814,8 +1906,6 @@ function renderCreateExercise() {
     <div class="card">
       ${field('Name', 'ne-name', '', 'e.g. Cable Crunch')}
       ${field('Equipment', 'ne-equipment', '', 'e.g. Cable Machine')}
-      ${field('Sets (default 3)', 'ne-sets', 'type="number" min="1" value="3"')}
-      ${field('Reps / time', 'ne-reps', '', 'e.g. 12 or 30s')}
       ${field('Image key (optional)', 'ne-image', '', 'leave blank for an illustration')}
       <label style="display:flex;align-items:center;gap:10px;font-size:14px;cursor:pointer">
         <input id="ne-assisted" type="checkbox" style="width:18px;height:18px" />
@@ -1833,7 +1923,9 @@ function submitNewExercise() {
   const ex = {
     id: uuid(), day: 'Library', section: '', name,
     equipment: val('ne-equipment'), weight_range: '',
-    sets_target: parseInt(val('ne-sets')) || 3, reps_target: val('ne-reps') || '10',
+    // Targets are gone from the UI; sets_target>0 just marks "loggable"
+    // (0 = note-only like Warmup/Abs) and every exercise starts at 3 sets.
+    sets_target: 3, reps_target: '',
     instructions: [], image_key: val('ne-image') || null, superset_group: null, sort_order: 0,
   };
   state.exercises.push(ex);
@@ -1847,6 +1939,7 @@ function submitNewExercise() {
 
 function saveExerciseNote(exerciseId, note) {
   state.exerciseNotes[exerciseId] = note;
+  saveSessionSnapshotSoon();
 }
 
 // Save an edited note from session history back to session.notes JSON.
@@ -1896,7 +1989,9 @@ async function saveHistoryNote(exerciseId, note) {
   const updated = { ...session, notes: JSON.stringify(meta) };
   state.historySession = updated;
   await DB.put('sessions', updated);
-  await DB.queueSync('sessions', 'update', updated);
+  // Upsert, matching every other session write (a PATCH against a row that
+  // never reached the server silently writes nothing).
+  await DB.queueSync('sessions', 'insert', toSessionRow(updated));
   syncIfOnline();
 }
 
@@ -1945,6 +2040,7 @@ function renderView(direction = 'none') {
     case 'library':           el.innerHTML = renderLibrary(); break;
     case 'create-exercise':   el.innerHTML = renderCreateExercise(); break;
     case 'recover':           el.innerHTML = renderRecovery(); break;
+    case 'deleted-sessions':  el.innerHTML = renderDeletedSessions(); break;
     default:                  el.innerHTML = renderHome();
   }
   el.scrollTop = 0;
@@ -1962,7 +2058,7 @@ function renderHome() {
   const days = (state.routineDays || []).map(d => ({ day: d.label, name: d.name, muscles: d.muscles || '', color: d.color }));
   const dayNameMap = Object.fromEntries(days.map(d => [d.day, d.name]));
 
-  const last = state.sessions.find(isSessionFinished);
+  const last = state.sessions.find(s => !s.deleted_at && isSessionFinished(s));
   const lastWidget = last ? `
     <div class="last-workout-widget">
       <div class="last-workout-dot">
@@ -1981,7 +2077,7 @@ function renderHome() {
   // Show resume card if actively in a workout OR if a saved-but-exited session exists
   const savedId = localStorage.getItem('activeWorkoutSessionId');
   const resumableSession = state.activeSession
-    || (!state.activeSession && savedId ? state.sessions.find(s => s.id === savedId) : null);
+    || (!state.activeSession && savedId ? state.sessions.find(s => s.id === savedId && !s.deleted_at) : null);
   const inProgress = resumableSession ? `
     <div class="card mb16" style="border-color: var(--pink);">
       <div style="font-size:12px;color:var(--pink);font-weight:700;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;">Workout in progress</div>
@@ -2100,7 +2196,6 @@ function renderWorkout() {
           <div class="superset-card-thumb">${thumb}</div>
           <div class="superset-card-ex-info">
             <div class="superset-card-ex-name">${esc(ex.name)}</div>
-            <div class="superset-card-ex-meta">${ex.sets_target}×${ex.reps_target}</div>
           </div>
           <div class="superset-card-ex-status">${statusEl}</div>
         </div>`;
@@ -2145,7 +2240,7 @@ function renderWorkout() {
 
         const meta = isNoteOnly
           ? (note ? `<div class="exercise-row-meta" style="color:var(--text3);font-style:italic;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:160px">${esc(note)}</div>` : '<div class="exercise-row-meta">Tap to add notes</div>')
-          : `<div class="exercise-row-meta">${ex.sets_target}×${ex.reps_target}</div>`;
+          : '';
 
         const lastSets = (state.lastLogs[ex.id] || []).filter(s => s.completed);
         let lastHint = '';
@@ -2241,10 +2336,6 @@ function renderExerciseDetail() {
       ${equipChips ? `<div class="detail-section-label">Equipment</div><div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;">${equipChips}</div>` : ''}
       ${muscleChips ? `<div class="detail-section-label">Muscles</div><div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;">${muscleChips}</div>` : ''}
       ${instructions ? `<div class="detail-section-label">Instructions</div><ol class="instructions-list">${instructions}</ol>` : ''}
-      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;">
-        <span class="tag">${ex.sets_target} sets</span>
-        ${ex.reps_target ? `<span class="tag">${ex.reps_target} reps</span>` : ''}
-      </div>
     </div>`;
   }
 
@@ -2336,7 +2427,7 @@ function renderExerciseDetail() {
       ${logs.map((s, i) => `<div class="set-row" data-ex-id="${ex.id}" data-set-idx="${i}">${buildSetRow(ex.id, i, s)}</div>`).join('')}
       <div class="btn-row mt8">
         <button class="btn btn-secondary" onclick="addSet('${ex.id}')">+ Add set</button>
-        ${logs.length > ex.sets_target ? `<button class="btn btn-secondary" onclick="removeLastSet('${ex.id}')">− Remove set</button>` : ''}
+        ${logs.length > 1 ? `<button class="btn btn-secondary" onclick="removeLastSet('${ex.id}')">− Remove set</button>` : ''}
       </div>
       <div class="btn-row mt8">
         <button class="btn btn-danger" onclick="skipExercise('${ex.id}')">${isSkipped ? 'Unskip' : 'Skip'}</button>
@@ -2484,7 +2575,6 @@ function renderSupersetDetail() {
             <div class="ss-ex-thumb">${thumb}</div>
             <div class="ss-ex-info">
               <div class="ss-ex-name">${esc(ex.name)}</div>
-              <div class="ss-ex-meta">${ex.sets_target}×${ex.reps_target}</div>
               <div class="ss-ex-drill-hint">Details ›</div>
             </div>
           </div>
@@ -2574,24 +2664,83 @@ async function openSessionDetail(sessionId) {
   }
 }
 
+// Supabase `sessions` columns. deleted_at is only included when the key is
+// present on the object, so devices that haven't run the soft-delete migration
+// yet don't start failing every ordinary session write.
+const SESSION_COLUMNS = ['id','user_id','day','date','notes','created_at','synced_at','deleted_at'];
+function toSessionRow(s) {
+  const row = {};
+  for (const k of SESSION_COLUMNS) if (s[k] !== undefined) row[k] = s[k];
+  return row;
+}
+
+// Soft delete: stamp deleted_at and sync it like any other session write.
+// set_logs stay intact so Restore brings the whole workout back; a background
+// prune hard-deletes anything older than 30 days.
+async function softDeleteSession(sessionId) {
+  const s = state.sessions.find(x => x.id === sessionId)
+    || (state.activeSession?.id === sessionId ? state.activeSession : null)
+    || await DB.get('sessions', sessionId);
+  if (!s) return;
+  const updated = { ...s, deleted_at: new Date().toISOString() };
+  await DB.put('sessions', updated);
+  await DB.queueSync('sessions', 'insert', toSessionRow(updated));
+  const i = state.sessions.findIndex(x => x.id === sessionId);
+  if (i >= 0) state.sessions[i] = updated;
+  syncIfOnline();
+}
+
 async function deleteSession(sessionId) {
-  if (!confirm('Delete this workout? This cannot be undone.')) return;
-
-  // Remove set_logs from IndexedDB
-  const logs = await DB.getAll('set_logs', 'session_id', sessionId);
-  for (const log of logs) await DB.del('set_logs', log.id);
-  await DB.del('sessions', sessionId);
-
-  // Remove from Supabase: delete set_logs first (FK constraint), then session
-  try { await Supabase.deleteSetLogsBySession(sessionId); } catch (_) {}
-  try { await Supabase.deleteRecord('sessions', sessionId); } catch (_) {}
-
-  state.sessions = state.sessions.filter(s => s.id !== sessionId);
+  if (!confirm('Delete this workout? It moves to Recently deleted (bottom of History) for 30 days.')) return;
+  await softDeleteSession(sessionId);
   state.historySession = null;
   state.historyLogs = [];
   await loadProgressData();
-  toast('Workout deleted');
+  toast('Moved to Recently deleted');
   setTab('history');
+}
+
+async function restoreDeletedSession(sessionId) {
+  const s = state.sessions.find(x => x.id === sessionId) || await DB.get('sessions', sessionId);
+  if (!s) return;
+  // Explicit null (not delete-the-key) so the cleared flag syncs to the server.
+  const updated = { ...s, deleted_at: null };
+  await DB.put('sessions', updated);
+  await DB.queueSync('sessions', 'insert', toSessionRow(updated));
+  const i = state.sessions.findIndex(x => x.id === sessionId);
+  if (i >= 0) state.sessions[i] = updated;
+  syncIfOnline();
+  await loadProgressData();
+  toast('Workout restored', 'success');
+  renderView();
+}
+
+// Shared hard-delete used by "Delete forever" and the 30-day prune.
+async function hardDeleteSession(sessionId) {
+  const logs = await DB.getAll('set_logs', 'session_id', sessionId);
+  for (const log of logs) await DB.del('set_logs', log.id);
+  await DB.del('sessions', sessionId);
+  await DB.purgePendingForSession(sessionId);
+  // Server session delete cascades its set_logs (FK on delete cascade).
+  await DB.queueSync('sessions', 'delete', { id: sessionId });
+  state.sessions = state.sessions.filter(s => s.id !== sessionId);
+  syncIfOnline();
+}
+
+async function purgeDeletedSession(sessionId) {
+  if (!confirm('Delete this workout forever? This cannot be undone.')) return;
+  await hardDeleteSession(sessionId);
+  await loadProgressData();
+  toast('Deleted forever');
+  renderView();
+}
+
+// Hard-delete soft-deleted sessions once they age out (30 days).
+const DELETED_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+async function pruneDeletedSessions() {
+  const cutoff = Date.now() - DELETED_RETENTION_MS;
+  const expired = state.sessions.filter(s => s.deleted_at && new Date(s.deleted_at).getTime() < cutoff);
+  for (const s of expired) await hardDeleteSession(s.id);
 }
 
 function renderSessionDetail() {
@@ -3064,7 +3213,11 @@ function isSessionFinished(s) {
 
 // ── History view ──────────────────────────────────────────────────
 function renderHistory() {
-  const finished = state.sessions.filter(isSessionFinished);
+  const finished = state.sessions.filter(s => !s.deleted_at && isSessionFinished(s));
+  const deletedCount = state.sessions.filter(s => s.deleted_at).length;
+  const deletedLink = deletedCount
+    ? `<button class="btn btn-ghost" style="margin-top:16px" onclick="navigateTo('deleted-sessions', {}, 'forward')">🗑 Recently deleted (${deletedCount})</button>`
+    : '';
   if (!finished.length) {
     return `
       <div class="page-header"><div class="page-title">History</div></div>
@@ -3072,7 +3225,8 @@ function renderHistory() {
         <div class="empty-icon">📋</div>
         <div class="empty-title">No workouts yet</div>
         <div class="empty-body">Complete your first workout to see it here.</div>
-      </div>`;
+      </div>
+      ${deletedLink}`;
   }
 
   const dayNames = Object.fromEntries((state.routineDays || []).map(d => [d.label, d.name]));
@@ -3092,7 +3246,52 @@ function renderHistory() {
     <div class="page-header">
       <div class="page-title">History</div>
     </div>
-    ${cards}`;
+    ${cards}
+    ${deletedLink}`;
+}
+
+// ── Recently deleted (on-device recovery) ─────────────────────────
+function renderDeletedSessions() {
+  const dayNames = Object.fromEntries((state.routineDays || []).map(d => [d.label, d.name]));
+  const deleted = state.sessions
+    .filter(s => s.deleted_at)
+    .sort((a, b) => (b.deleted_at || '').localeCompare(a.deleted_at || ''));
+
+  const header = `
+    <div class="page-header">
+      <button class="back-btn" aria-label="Back" onclick="setTab('history')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
+      </button>
+      <div style="flex:1">
+        <div class="page-title">Recently deleted</div>
+        <div class="page-subtitle">Kept for 30 days, then removed for good</div>
+      </div>
+    </div>`;
+
+  if (!deleted.length) {
+    return `${header}
+      <div class="empty">
+        <div class="empty-icon">🗑</div>
+        <div class="empty-body">Nothing here — deleted workouts land in this list for 30 days.</div>
+      </div>`;
+  }
+
+  const cards = deleted.map(s => `
+    <div class="session-card">
+      <div class="session-card-header">
+        <div>
+          <div class="session-card-day">${esc(dayNames[s.day] || s.day)}</div>
+          <div class="session-card-date">${fmtDate(s.date)}</div>
+        </div>
+      </div>
+      <div class="session-card-stats">Deleted ${daysAgo(s.deleted_at.slice(0, 10))}</div>
+      <div class="btn-row mt8">
+        <button class="btn btn-secondary" onclick="restoreDeletedSession('${s.id}')">Restore</button>
+        <button class="btn btn-danger" onclick="purgeDeletedSession('${s.id}')">Delete forever</button>
+      </div>
+    </div>`).join('');
+
+  return `${header}${cards}`;
 }
 
 function renderRecovery() {
@@ -3211,7 +3410,7 @@ async function swapExercise(oldExId, newExId) {
   // Build set logs for the new exercise, prefilling from lastCache if available
   const prevSets = state.lastCache?.[newExId]?.sets || [];
   const rows = [];
-  for (let i = 0; i < newEx.sets_target; i++) {
+  for (let i = 0; i < DEFAULT_SET_COUNT; i++) {
     const prev = prevSets.find(l => l.set_number === i + 1);
     rows.push({
       setNumber: i + 1,
@@ -3243,6 +3442,7 @@ async function swapExercise(oldExId, newExId) {
     persistExercise(newEx);
   }
 
+  saveSessionSnapshotSoon();
   navigateTo('exercise-detail', { exercise: swappedIn });
 }
 
@@ -3432,7 +3632,7 @@ function bindViewEvents() {
   view.querySelectorAll('.detail-name-input').forEach(input => {
     input.addEventListener('change', () => {
       const ex = state.sessionExercises.find(e => e.id === input.dataset.exId);
-      if (ex) { ex.name = input.value; state.detailExercise = ex; }
+      if (ex) { ex.name = input.value; state.detailExercise = ex; saveSessionSnapshotSoon(); }
     });
   });
 
@@ -3742,7 +3942,7 @@ async function tryResumeSession() {
   if (!savedId) return;
 
   const session = state.sessions.find(s => s.id === savedId);
-  if (!session) {
+  if (!session || session.deleted_at) {
     localStorage.removeItem('activeWorkoutSessionId');
     return;
   }
@@ -3754,13 +3954,22 @@ async function tryResumeSession() {
   if (meta?.v === 1 && Array.isArray(meta.exercises)) {
     sessionExercises = meta.exercises.map(saved => {
       const base = state.exercises.find(e => e.id === saved.id);
+      // The saved snapshot is authoritative for section AND superset grouping —
+      // falling back to the catalog here silently reverted supersets/sections
+      // made mid-workout every time the PWA reloaded. Older metas that predate
+      // these fields (undefined) still fall back to the catalog row.
       return base
-        ? { ...base, section: saved.section || base.section, _note: saved.note }
+        ? {
+            ...base,
+            section: saved.section !== undefined ? saved.section : base.section,
+            superset_group: saved.superset_group !== undefined ? (saved.superset_group || null) : base.superset_group,
+            _note: saved.note,
+          }
         : {
             id: saved.id, name: saved.name, section: saved.section,
             sets_target: saved.sets_target, reps_target: saved.reps_target,
             weight_range: '', equipment: '', instructions: [],
-            image_key: null, superset_group: null, sort_order: 0, _custom: true,
+            image_key: null, superset_group: saved.superset_group || null, sort_order: 0, _custom: true,
           };
     });
   } else {
@@ -3778,8 +3987,11 @@ async function tryResumeSession() {
   for (const ex of sessionExercises) {
     if (!ex.sets_target) { setLogs[ex.id] = []; continue; }
     const exLogs = logs.filter(l => l.exercise_id === ex.id);
+    // Rebuild at least the standard row count, but never drop sets the user
+    // added mid-session (logs beyond the default used to vanish on resume).
+    const rowCount = Math.max(DEFAULT_SET_COUNT, ...exLogs.map(l => l.set_number || 0));
     const rows = [];
-    for (let i = 0; i < ex.sets_target; i++) {
+    for (let i = 0; i < rowCount; i++) {
       const saved = exLogs.find(l => l.set_number === i + 1);
       rows.push({
         setNumber: i + 1,
@@ -3826,6 +4038,7 @@ async function pruneEmptySessions() {
   const toDelete = [];
   for (const s of state.sessions) {
     if (s.id === activeId) continue;
+    if (s.deleted_at) continue; // soft-deleted → pruneDeletedSessions owns it
     const createdAt = new Date(s.created_at || s.date).getTime();
     if (createdAt > cutoff) continue; // too recent — may still be syncing
     const logs = await DB.getAll('set_logs', 'session_id', s.id);
@@ -3833,10 +4046,12 @@ async function pruneEmptySessions() {
   }
   for (const s of toDelete) {
     await DB.del('sessions', s.id);
-    try { await Supabase.deleteRecord('sessions', s.id); } catch (_) {}
+    await DB.purgePendingForSession(s.id);
+    await DB.queueSync('sessions', 'delete', { id: s.id });
   }
   if (toDelete.length > 0) {
     state.sessions = state.sessions.filter(s => !toDelete.find(d => d.id === s.id));
+    syncIfOnline();
   }
 }
 
@@ -3883,6 +4098,7 @@ async function refreshFromNetwork() {
     await loadSessions();
     await loadProgressData();
     await pruneEmptySessions();
+    await pruneDeletedSessions();
   } catch (_) {}
   updateSyncDot();
   if (!state.activeSession) renderView();
