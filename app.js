@@ -266,6 +266,9 @@ async function loadExercises() {
       if (exs.length === 0) {
         await seedExercises();
         exs = await Supabase.getExercises();
+      } else {
+        const hadNew = await syncNewExercises(exs);
+        if (hadNew) exs = await Supabase.getExercises();
       }
       // Local edits that STILL couldn't flush win over the fetched rows —
       // they'll reach the server on a later flush; showing the pre-edit server
@@ -314,6 +317,17 @@ async function seedExercises() {
     try { await Supabase.insertExercises(batch); } catch (_) {}
   }
   state.seeding = false;
+}
+
+async function syncNewExercises(remoteExs) {
+  const remoteNames = new Set(remoteExs.map(e => `${e.day}::${e.name}`));
+  const missing = EXERCISES.filter(e => !remoteNames.has(`${e.day}::${e.name}`));
+  if (!missing.length) return false;
+  const batches = chunk(missing, 25);
+  for (const batch of batches) {
+    try { await Supabase.insertExercises(batch); } catch (_) {}
+  }
+  return true;
 }
 
 // ── Workout days (data-driven, with creator mode) ────────────────────
@@ -570,8 +584,13 @@ async function loadProgressData() {
       .map(([sid, { date, sets }]) => {
         const best = sets.reduce((b, s) => {
           if (!b) return s;
-          if (assisted ? s.weight_lbs < b.weight_lbs : s.weight_lbs > b.weight_lbs) return s;
-          if (s.weight_lbs === b.weight_lbs && (s.reps || 0) > (b.reps || 0)) return s;
+          if (assisted) {
+            if (s.weight_lbs < b.weight_lbs) return s;
+          } else {
+            const sVol = (s.weight_lbs || 0) * (s.reps || 0);
+            const bVol = (b.weight_lbs || 0) * (b.reps || 0);
+            if (sVol > bVol) return s;
+          }
           return b;
         }, null);
         return { sessionId: sid, date, sets: sets.sort((a, b) => a.set_number - b.set_number), bestSet: best };
@@ -588,10 +607,9 @@ async function loadProgressData() {
         if (sess.bestSet.weight_lbs != null && sess.bestSet.weight_lbs < pr.weight_lbs)
           pr = { weight_lbs: sess.bestSet.weight_lbs, reps: sess.bestSet.reps, date: sess.date };
       } else {
-        const nW = sess.bestSet.weight_lbs ?? 0, nR = sess.bestSet.reps || 0;
-        const pW = pr.weight_lbs ?? 0, pR = pr.reps || 0;
-        if (nW > pW || (nW === pW && nR > pR))
-          pr = { weight_lbs: sess.bestSet.weight_lbs, reps: sess.bestSet.reps, date: sess.date };
+        const vol = (sess.bestSet.weight_lbs || 0) * (sess.bestSet.reps || 0);
+        const prVol = (pr.weight_lbs || 0) * (pr.reps || 0);
+        if (vol > prVol) pr = { weight_lbs: sess.bestSet.weight_lbs, reps: sess.bestSet.reps, date: sess.date };
       }
     }
     if (pr) state.prCache[exId] = pr;
@@ -674,8 +692,9 @@ function checkPR(exerciseId, weight, reps) {
   } else if (assisted) {
     isNewPR = w != null && w < pr.weight_lbs;
   } else {
-    const prW = pr.weight_lbs ?? 0, prR = pr.reps || 0;
-    isNewPR = (w != null && w > prW) || (w != null && w === prW && r > prR) || (w == null && r > prR);
+    const vol = (w ?? 0) * r;
+    const prVol = (pr.weight_lbs ?? 0) * (pr.reps || 0);
+    isNewPR = vol > prVol;
   }
   if (isNewPR) {
     state.prCache[exerciseId] = { weight_lbs: w, reps: r, date: today() };

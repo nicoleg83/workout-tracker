@@ -27,6 +27,7 @@ const IMAGE_KEYS = new Set([
   'terminal-knee-extension','lying-hamstring-curl','barbell-hip-thrust',
   'captains-chair-knee-raise','ab-wheel-rollout','cable-pallof-press',
   'cable-external-rotation','dumbbell-scaption-raise','side-lying-external-rotation',
+  'single-leg-calf-raise','single-leg-extension-machine','single-leg-hamstring-curl-machine',
 ]);
 
 function getExerciseMedia(imageKey) {
