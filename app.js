@@ -1724,8 +1724,8 @@ function editRow(ex) {
     : (ILLUSTRATIONS[ex.image_key] || ILLUSTRATIONS['_placeholder']).replace(/viewBox="[^"]*"/, 'viewBox="0 0 120 160"');
   return `<div class="exercise-row" data-ex-id="${ex.id}">
     <div class="drag-handle">⠿</div>
-    <div class="exercise-row-thumb" data-info-ex="${ex.id}" style="cursor:pointer">${thumb}</div>
-    <div class="exercise-row-info" data-info-ex="${ex.id}" style="cursor:pointer">
+    <div class="exercise-row-thumb">${thumb}</div>
+    <div class="exercise-row-info">
       <div class="exercise-row-name">${esc(ex.name)}</div>
       <div class="exercise-row-meta">${esc(ex.equipment || '')}</div>
     </div>
@@ -3896,10 +3896,6 @@ function bindViewEvents() {
   view.querySelectorAll('[data-lib-ex]').forEach(row => {
     row.addEventListener('click', () => showExerciseInfoSheet(row.dataset.libEx));
   });
-  view.querySelectorAll('[data-info-ex]').forEach(el => {
-    el.addEventListener('click', e => { e.stopPropagation(); showExerciseInfoSheet(el.dataset.infoEx); });
-  });
-
   const editSortEl = view.querySelector('#edit-sortable');
   if (editSortEl && typeof Sortable !== 'undefined') {
     Sortable.create(editSortEl, {
@@ -3911,6 +3907,14 @@ function bindViewEvents() {
         group: 'edit-ex', handle: '.drag-handle', animation: 150, delay: 120, delayOnTouchOnly: true,
         onEnd() { rebuildDraftFromDOM(); },
       });
+    });
+    // Delegated click — after Sortable init so it fires inside Sortable's event model.
+    // Tapping the name/thumb opens the exercise info sheet; buttons handle their own events.
+    editSortEl.addEventListener('click', e => {
+      if (e.target.closest('.drag-handle,.section-drag-handle,.ex-remove-btn,.ex-group-btn,.section-rename-btn,.section-dissolve-btn,.ss-menu-btn')) return;
+      const row = e.target.closest('.exercise-row[data-ex-id]');
+      if (!row) return;
+      showExerciseInfoSheet(row.dataset.exId);
     });
   }
 }
