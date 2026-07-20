@@ -1,4 +1,4 @@
-const CACHE = 'workout-v86';
+const CACHE = 'workout-v87';
 const BASE = self.registration.scope;
 
 // Offline shell — only non-HTML assets (HTML is always fetched fresh)

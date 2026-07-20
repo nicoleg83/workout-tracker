@@ -320,8 +320,10 @@ async function seedExercises() {
 }
 
 async function syncNewExercises(remoteExs) {
-  const remoteNames = new Set(remoteExs.map(e => `${e.day}::${e.name}`));
-  const missing = EXERCISES.filter(e => !remoteNames.has(`${e.day}::${e.name}`));
+  // Check by name only — exercises can move between days/Library so day::name
+  // matching would re-insert moved exercises as duplicates.
+  const remoteNames = new Set(remoteExs.map(e => e.name));
+  const missing = EXERCISES.filter(e => !remoteNames.has(e.name));
   if (!missing.length) return false;
   const batches = chunk(missing, 25);
   for (const batch of batches) {
