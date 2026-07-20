@@ -1724,8 +1724,8 @@ function editRow(ex) {
     : (ILLUSTRATIONS[ex.image_key] || ILLUSTRATIONS['_placeholder']).replace(/viewBox="[^"]*"/, 'viewBox="0 0 120 160"');
   return `<div class="exercise-row" data-ex-id="${ex.id}">
     <div class="drag-handle">⠿</div>
-    <div class="exercise-row-thumb">${thumb}</div>
-    <div class="exercise-row-info">
+    <div class="exercise-row-thumb" data-info-ex="${ex.id}" style="cursor:pointer">${thumb}</div>
+    <div class="exercise-row-info" data-info-ex="${ex.id}" style="cursor:pointer">
       <div class="exercise-row-name">${esc(ex.name)}</div>
       <div class="exercise-row-meta">${esc(ex.equipment || '')}</div>
     </div>
@@ -1813,7 +1813,8 @@ function showAddToDayPicker(day) {
     .filter(e => !draftKeys.has(e.image_key || `__name__::${e.name}`))
     .sort((a, b) => a.name.localeCompare(b.name));
   const opts = all.map(ex => {
-    const sourceMeta = ex.day && ex.day !== 'Library' ? ` · ${esc(ex.day)}` : '';
+    const dayDisplayName = ex.day && ex.day !== 'Library' ? (dayName(ex.day) || ex.day) : '';
+    const sourceMeta = dayDisplayName ? ` · ${esc(dayDisplayName)}` : '';
     return `<button class="group-sheet-option" data-add-lib="${ex.id}" data-add-from-day="${esc(ex.day || '')}">
       <div><span class="group-sheet-label">${esc(ex.name)}</span><span class="group-sheet-meta">${esc(ex.equipment || '')}${sourceMeta}</span></div>
     </button>`;
@@ -1940,25 +1941,43 @@ function renderLibrary() {
 }
 
 // Action sheet: move a library/catalog exercise into a day (or back to Library).
-function showMoveToDayPicker(exId) {
+// Detail sheet for Library and edit-day views: shows image, instructions, muscles, and move actions.
+function showExerciseInfoSheet(exId) {
   const ex = state.exercises.find(e => e.id === exId);
   if (!ex) return;
+  const _m = exerciseMuscles(ex);
+  const muscleChips = _m
+    ? [...(_m.primary || []).map(m => `<span class="tag tag-muscle-primary">${esc(m)}</span>`),
+       ...(_m.secondary || []).map(m => `<span class="tag tag-muscle-secondary">${esc(m)}</span>`)].join('')
+    : '';
+  const instrHtml = (ex.instructions || []).length
+    ? `<ol class="instructions-list" style="margin:0 0 12px;padding-left:18px">${(ex.instructions).map(i => `<li style="margin-bottom:4px;font-size:14px;color:var(--text2)">${esc(i)}</li>`).join('')}</ol>`
+    : '';
+  const mediaHtml = ex.image_key
+    ? (IMAGE_KEYS.has(ex.image_key)
+        ? `<div style="text-align:center;margin-bottom:12px"><img src="icons/exercises/${ex.image_key}.webp" style="max-height:160px;border-radius:10px;object-fit:cover" loading="lazy" alt=""/></div>`
+        : `<div style="text-align:center;margin-bottom:12px">${(ILLUSTRATIONS[ex.image_key] || ILLUSTRATIONS['_placeholder']).replace(/viewBox="[^"]*"/, 'viewBox="0 0 120 160"').replace('<svg ', '<svg style="height:120px" ')}</div>`)
+    : '';
   const dayOpts = (state.routineDays || [])
     .filter(d => d.label !== ex.day)
-    .map(d => `<button class="group-sheet-option" data-move-day="${esc(d.label)}"><div><span class="group-sheet-label">Add to ${esc(d.label)} — ${esc(d.name || '')}</span></div></button>`)
+    .map(d => `<button class="group-sheet-option" data-move-day="${esc(d.label)}"><div><span class="group-sheet-label">Add to ${esc(d.name || d.label)}</span></div></button>`)
     .join('');
   const libOpt = ex.day !== 'Library'
-    ? `<button class="group-sheet-option" data-move-day="Library"><div><span class="group-sheet-label">Move to Library</span><span class="group-sheet-meta">Remove from ${esc(ex.day)} (keeps history)</span></div></button>`
+    ? `<button class="group-sheet-option" data-move-day="Library"><div><span class="group-sheet-label">Move to Library</span><span class="group-sheet-meta">Removes from ${esc(dayName(ex.day) || ex.day)} (keeps history)</span></div></button>`
     : '';
   const sheet = document.createElement('div');
   sheet.id = 'group-picker-sheet';
   sheet.innerHTML = `
     <div class="group-picker-backdrop"></div>
-    <div class="group-picker-panel">
+    <div class="group-picker-panel" style="max-height:85vh;overflow-y:auto">
       <div class="group-picker-handle"></div>
-      <div class="group-picker-title">${esc(ex.name)}</div>
+      <div style="font-size:17px;font-weight:700;margin-bottom:8px">${esc(ex.name)}</div>
+      ${mediaHtml}
+      ${ex.equipment ? `<div style="font-size:12px;color:var(--text3);margin-bottom:8px">${esc(ex.equipment)}</div>` : ''}
+      ${muscleChips ? `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">${muscleChips}</div>` : ''}
+      ${instrHtml}
       ${dayOpts}${libOpt}
-      <button class="group-picker-cancel">Cancel</button>
+      <button class="group-picker-cancel">Done</button>
     </div>`;
   document.body.appendChild(sheet);
   requestAnimationFrame(() => sheet.querySelector('.group-picker-panel').classList.add('open'));
@@ -1968,6 +1987,8 @@ function showMoveToDayPicker(exId) {
     btn.addEventListener('click', () => { closeGroupPicker(); moveExerciseToDay(exId, btn.dataset.moveDay); });
   });
 }
+
+function showMoveToDayPicker(exId) { showExerciseInfoSheet(exId); }
 
 // Library actions persist directly (explicit, one-off — not the edit-day draft).
 function moveExerciseToDay(exId, day) {
@@ -3027,7 +3048,7 @@ function renderProgress() {
 
   let rowsHtml = '';
   for (const day of dayOrder) {
-    rowsHtml += `<div class="section-label" style="margin-top:16px">${dayNames[day] || day} · ${day}</div>`;
+    rowsHtml += `<div class="section-label" style="margin-top:16px">${dayNames[day] || day}</div>`;
     for (const ex of grouped[day]) {
       const last = state.lastCache?.[ex.id];
       const pr = state.prCache?.[ex.id];
@@ -3873,7 +3894,10 @@ function bindViewEvents() {
     btn.addEventListener('click', () => { state.libraryFilter = btn.dataset.libFilter || null; renderView(); });
   });
   view.querySelectorAll('[data-lib-ex]').forEach(row => {
-    row.addEventListener('click', () => showMoveToDayPicker(row.dataset.libEx));
+    row.addEventListener('click', () => showExerciseInfoSheet(row.dataset.libEx));
+  });
+  view.querySelectorAll('[data-info-ex]').forEach(el => {
+    el.addEventListener('click', e => { e.stopPropagation(); showExerciseInfoSheet(el.dataset.infoEx); });
   });
 
   const editSortEl = view.querySelector('#edit-sortable');
