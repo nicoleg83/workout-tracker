@@ -1802,13 +1802,18 @@ function renderEditDay() {
   return html;
 }
 
-// Bottom sheet: pick a Library exercise to add into the day being edited.
+// Bottom sheet: pick any exercise (from any day or Library) to add to the day being edited.
 function showAddToDayPicker(day) {
-  const libs = state.exercises.filter(e => e.day === 'Library').sort((a, b) => a.name.localeCompare(b.name));
-  const opts = libs.map(ex => `
-    <button class="group-sheet-option" data-add-lib="${ex.id}">
-      <div><span class="group-sheet-label">${esc(ex.name)}</span><span class="group-sheet-meta">${esc(ex.equipment || '')}</span></div>
-    </button>`).join('');
+  const draftIds = new Set((state.editDraft || []).map(e => e.id));
+  const all = state.exercises
+    .filter(e => !e._custom && !draftIds.has(e.id))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const opts = all.map(ex => {
+    const sourceMeta = ex.day && ex.day !== 'Library' ? ` · ${esc(ex.day)}` : '';
+    return `<button class="group-sheet-option" data-add-lib="${ex.id}" data-add-from-day="${esc(ex.day || '')}">
+      <div><span class="group-sheet-label">${esc(ex.name)}</span><span class="group-sheet-meta">${esc(ex.equipment || '')}${sourceMeta}</span></div>
+    </button>`;
+  }).join('');
   const sheet = document.createElement('div');
   sheet.id = 'group-picker-sheet';
   sheet.innerHTML = `
@@ -1816,7 +1821,7 @@ function showAddToDayPicker(day) {
     <div class="group-picker-panel">
       <div class="group-picker-handle"></div>
       <div class="group-picker-title">Add to ${esc(day)}</div>
-      ${opts || '<div style="padding:8px 4px;color:var(--text2);font-size:14px">Your Library is empty. Remove an exercise from a day, or create new ones in the Library tab.</div>'}
+      ${opts || '<div style="padding:8px 4px;color:var(--text2);font-size:14px">No exercises available to add.</div>'}
       <button class="group-picker-cancel">Cancel</button>
     </div>`;
   document.body.appendChild(sheet);
@@ -1824,8 +1829,32 @@ function showAddToDayPicker(day) {
   sheet.querySelector('.group-picker-backdrop').addEventListener('click', closeGroupPicker);
   sheet.querySelector('.group-picker-cancel').addEventListener('click', closeGroupPicker);
   sheet.querySelectorAll('[data-add-lib]').forEach(btn => {
-    btn.addEventListener('click', () => { closeGroupPicker(); addExerciseToDraft(btn.dataset.addLib); });
+    btn.addEventListener('click', () => {
+      closeGroupPicker();
+      const fromDay = btn.dataset.addFromDay;
+      if (fromDay && fromDay !== 'Library') {
+        // Exercise belongs to another day — copy it so the original stays in its day
+        addExerciseCopyToDraft(btn.dataset.addLib);
+      } else {
+        addExerciseToDraft(btn.dataset.addLib);
+      }
+    });
   });
+}
+
+// Create a copy of an exercise from another day so it can be added without moving the original.
+async function addExerciseCopyToDraft(exId) {
+  const ex = state.exercises.find(e => e.id === exId);
+  if (!ex) return;
+  const copy = { ...ex, id: uuid(), day: state.editDay, section: '', superset_group: null, sort_order: 0 };
+  state.exercises.push(copy);
+  state.editDraft.push({ ...copy });
+  // Insert eagerly so the later persistExercise UPDATE has a row to update
+  await DB.put('exercises', copy);
+  await DB.queueSync('exercises', 'insert', toExerciseRow(copy));
+  syncIfOnline();
+  state.editDirty = true;
+  renderView();
 }
 
 // ── Library browser + create exercise (Phase 2) ──────────────────────
