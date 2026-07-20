@@ -626,7 +626,7 @@ async function loadProgressData() {
     if (!cur) { prByKey[key] = { pr, assisted }; continue; }
     const isBetter = assisted
       ? pr.weight_lbs < cur.pr.weight_lbs
-      : (pr.weight_lbs > cur.pr.weight_lbs || (pr.weight_lbs === cur.pr.weight_lbs && (pr.reps || 0) > (cur.pr.reps || 0)));
+      : (pr.weight_lbs || 0) * (pr.reps || 0) > (cur.pr.weight_lbs || 0) * (cur.pr.reps || 0);
     if (isBetter) prByKey[key] = { pr, assisted };
   }
   for (const ex of state.exercises) {
@@ -637,7 +637,7 @@ async function loadProgressData() {
     if (!local) { state.prCache[ex.id] = best; continue; }
     const isBetter = assisted
       ? best.weight_lbs < local.weight_lbs
-      : (best.weight_lbs > local.weight_lbs || (best.weight_lbs === local.weight_lbs && (best.reps || 0) > (local.reps || 0)));
+      : (best.weight_lbs || 0) * (best.reps || 0) > (local.weight_lbs || 0) * (local.reps || 0);
     if (isBetter) state.prCache[ex.id] = best;
   }
 
