@@ -1804,9 +1804,11 @@ function renderEditDay() {
 
 // Bottom sheet: pick any exercise (from any day or Library) to add to the day being edited.
 function showAddToDayPicker(day) {
-  const draftIds = new Set((state.editDraft || []).map(e => e.id));
-  const all = state.exercises
-    .filter(e => !e._custom && !draftIds.has(e.id))
+  const draftKeys = new Set(
+    (state.editDraft || []).map(e => e.image_key || `__name__::${e.name}`)
+  );
+  const all = dedupeExercises(state.exercises.filter(e => !e._custom))
+    .filter(e => !draftKeys.has(e.image_key || `__name__::${e.name}`))
     .sort((a, b) => a.name.localeCompare(b.name));
   const opts = all.map(ex => {
     const sourceMeta = ex.day && ex.day !== 'Library' ? ` · ${esc(ex.day)}` : '';
@@ -1857,6 +1859,34 @@ async function addExerciseCopyToDraft(exId) {
   renderView();
 }
 
+// Deduplicate exercises by image_key (falling back to name) so the same
+// physical exercise doesn't appear twice when it's scheduled on multiple days.
+// Picks the canonical representative: most logged history first, then earliest
+// day order, then lowest sort_order.
+function dedupeExercises(list) {
+  const dayOrder = label => {
+    const i = (state.routineDays || []).findIndex(r => r.label === label);
+    return i >= 0 ? i : (label === 'Library' ? 999 : 998);
+  };
+  const groups = new Map();
+  for (const ex of list) {
+    const key = ex.image_key || `__name__::${ex.name}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(ex);
+  }
+  return [...groups.values()].map(group => {
+    if (group.length === 1) return group[0];
+    return [...group].sort((a, b) => {
+      const aH = (state.historyCache?.[a.id] || []).length;
+      const bH = (state.historyCache?.[b.id] || []).length;
+      if (bH !== aH) return bH - aH;
+      const dA = dayOrder(a.day), dB = dayOrder(b.day);
+      if (dA !== dB) return dA - dB;
+      return (a.sort_order || 0) - (b.sort_order || 0);
+    })[0];
+  });
+}
+
 // ── Library browser + create exercise (Phase 2) ──────────────────────
 function libRow(ex) {
   const thumb = IMAGE_KEYS.has(ex.image_key)
@@ -1874,7 +1904,7 @@ function libRow(ex) {
 
 function renderLibrary() {
   const q = (state.librarySearch || '').toLowerCase().trim();
-  const all = state.exercises.filter(e => !e._custom);
+  const all = dedupeExercises(state.exercises.filter(e => !e._custom));
   const dayLabels = (state.routineDays || []).map(d => d.label);
   const f = state.libraryFilter || null; // null = All, a day label, or 'Other'
   const match = e => {
@@ -2981,7 +3011,7 @@ function renderProgress() {
     `<button class="prog-chip ${state.progressDay === d.key ? 'active' : ''}" data-prog-day="${d.key || ''}">${d.label}</button>`
   ).join('');
 
-  let exercises = state.exercises.filter(e => !e._custom && e.sets_target > 0);
+  let exercises = dedupeExercises(state.exercises.filter(e => !e._custom && e.sets_target > 0));
   if (state.progressDay) exercises = exercises.filter(e => e.day === state.progressDay);
   exercises.sort((a, b) => a.sort_order - b.sort_order);
 
