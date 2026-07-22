@@ -100,6 +100,67 @@ describe('resumed-session prefill (loadLastLogs)', () => {
 
     expect(app.state.lastLogs).toEqual({});
   });
+
+  // Regression: Barbell back squat / leg press prefill + PR card vanished when
+  // an exercise was done in an earlier session but SKIPPED in the most recent
+  // one for that day. loadLastLogs read only the immediately-previous session,
+  // so a skipped exercise got no lastLogs entry — wiping both prefill
+  // (initSetLogs) and the entire "Last session"/PR card (gated on lastLogs).
+  // Found 2026-07-22. Fix: fall back to the exercise's own lastCache entry.
+  it('prefills from an earlier session when the exercise was skipped last time', async () => {
+    const app = loadApp();
+    app.state.exercises = [
+      { id: 'ex-squat', day: 'Legs', name: 'Barbell Back Squat', sets_target: 3, reps_target: '5' },
+      { id: 'ex-legpress', day: 'Legs', name: 'Leg Press', sets_target: 3, reps_target: '10' },
+    ];
+    app.state.sessions = [
+      { id: 'sess-legs-recent', day: 'Legs', date: '2026-07-20' }, // squat skipped here
+      { id: 'sess-legs-older', day: 'Legs', date: '2026-07-13' },  // squat done here
+    ];
+    // Most recent Legs session only logged leg press, not the squat.
+    app.Supabase.getSetLogs = async (sessionId) =>
+      sessionId === 'sess-legs-recent'
+        ? [{ id: 'lp-1', session_id: 'sess-legs-recent', exercise_id: 'ex-legpress', set_number: 1, weight_lbs: 300, reps: 10, completed: true }]
+        : [];
+    // lastCache (from loadProgressData over ALL history) still holds the squat
+    // from the older session.
+    app.state.lastCache = {
+      'ex-squat': {
+        sessionId: 'sess-legs-older', date: '2026-07-13',
+        sets: [{ session_id: 'sess-legs-older', exercise_id: 'ex-squat', set_number: 1, weight_lbs: 225, reps: 5, completed: true }],
+      },
+    };
+
+    await app.loadLastLogs('Legs');
+
+    // Leg press comes from the recent session as before.
+    expect(app.state.lastLogs['ex-legpress'][0].weight_lbs).toBe(300);
+    // Squat, skipped last session, still prefills from the older one.
+    expect(app.state.lastLogs['ex-squat']).toBeDefined();
+    expect(app.state.lastLogs['ex-squat'][0].weight_lbs).toBe(225);
+  });
+
+  it('does not prefill an exercise from the active session itself', async () => {
+    const app = loadApp();
+    app.state.exercises = [{ id: 'ex-squat', day: 'Legs', name: 'Barbell Back Squat', sets_target: 3 }];
+    app.state.sessions = [
+      { id: 'sess-active', day: 'Legs', date: '2026-07-22' },
+      { id: 'sess-prev', day: 'Legs', date: '2026-07-20' },
+    ];
+    app.state.activeSession = { id: 'sess-active', day: 'Legs', date: '2026-07-22' };
+    app.Supabase.getSetLogs = async () => []; // prev session logged nothing for squat
+    // lastCache points at the active session — must be ignored.
+    app.state.lastCache = {
+      'ex-squat': {
+        sessionId: 'sess-active', date: '2026-07-22',
+        sets: [{ session_id: 'sess-active', exercise_id: 'ex-squat', set_number: 1, weight_lbs: 999, reps: 1, completed: true }],
+      },
+    };
+
+    await app.loadLastLogs('Legs');
+
+    expect(app.state.lastLogs['ex-squat']).toBeUndefined();
+  });
 });
 
 describe('weight set-row input (buildSetRow)', () => {

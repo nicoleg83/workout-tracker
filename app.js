@@ -523,19 +523,20 @@ async function loadLastLogs(day) {
     state.lastLogs[exId] = dedupeSetLogs(state.lastLogs[exId]);
   }
 
-  // Cross-day last logs: for exercises with no history in this day,
-  // pull the most recent log from any other day with the same image_key.
+  // Fallback for exercises not logged in the immediately-previous session:
+  // pull the most recent session that DID log them, so prefill + the PR card
+  // never vanish just because you skipped an exercise last time. state.lastCache
+  // (built by loadProgressData from all history) is already cross-day/image_key
+  // merged, so an exercise's own entry there is its true "last time performed" —
+  // even if that was several sessions ago, or under a sibling exercise sharing
+  // an image_key. Skip the active session so we never prefill from itself.
   if (state.lastCache) {
-    for (const ex of state.exercises.filter(e => e.day === day && e.image_key)) {
+    for (const ex of state.exercises.filter(e => e.day === day)) {
       if (state.lastLogs[ex.id]?.length) continue;
-      const sameKey = state.exercises.filter(e => e.id !== ex.id && e.image_key === ex.image_key);
-      let best = null;
-      for (const other of sameKey) {
-        const entry = state.lastCache[other.id];
-        if (!entry) continue;
-        if (!best || entry.date > best.date) best = entry;
+      const entry = state.lastCache[ex.id];
+      if (entry?.sets?.length && entry.sessionId !== state.activeSession?.id) {
+        state.lastLogs[ex.id] = entry.sets;
       }
-      if (best?.sets?.length) state.lastLogs[ex.id] = best.sets;
     }
   }
 }
