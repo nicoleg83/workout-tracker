@@ -1,52 +1,56 @@
 // Adding a NON-library (custom) exercise must work in both entry points and
 // stay private to the account that creates it:
-//   - routine edit view: addBlankExerciseToDraft (new; created into the day)
+//   - routine edit view: create form targeting the day (submitNewExercise)
 //   - workout view:       addCustomExercise (existing; session-scoped)
 import { describe, it, expect, beforeEach } from 'vitest';
 import { loadApp } from './helpers/load-app.js';
 
-describe('add a custom exercise in the routine edit view', () => {
-  let app, queued;
+describe('create a custom exercise into the day being edited (full form)', () => {
+  let app, queued, nav;
 
   beforeEach(() => {
     app = loadApp();
     app.crypto = { randomUUID: () => 'ex-new-1' };
     app.Supabase.getUser = () => ({ id: 'U1' });
-    app.renderView = () => {};
+    app.toast = () => {};
+    nav = null;
+    app.navigateTo = (view) => { nav = view; };
     app.syncIfOnline = () => {};
     queued = null;
     app.DB.put = async () => {};
     app.DB.queueSync = async (table, op, payload) => { queued = { table, op, payload }; };
+    app.state.routineDays = [{ label: 'Day 2', name: 'Pull' }];
     app.state.editDay = 'Day 2';
     app.state.exercises = [];
     app.state.editDraft = [];
+    app.state.createExerciseTarget = 'editDay'; // opened from the routine editor
+    const fields = {
+      'ne-name': { value: 'Cable Crunch' },
+      'ne-equipment': { value: 'Cable Machine' },
+      'ne-instructions': { value: 'Step A\nStep B' },
+      'ne-assisted': { checked: false },
+    };
+    app.document.getElementById = id => fields[id] || null;
   });
 
-  it('creates a named, user-owned exercise directly in the edited day', async () => {
-    app.prompt = () => 'Cable Crunch';
+  it('saves a user-owned exercise into the edited day, then returns to it', () => {
+    app.submitNewExercise();
 
-    await app.addBlankExerciseToDraft();
-
-    expect(app.state.editDraft).toHaveLength(1);
-    const row = app.state.editDraft[0];
-    expect(row.name).toBe('Cable Crunch');
-    expect(row.day).toBe('Day 2');           // lands in the day, not the Library
-    expect(app.state.editDirty).toBe(true);
-
-    // Synced as an insert stamped with the current account's id.
+    // Persisted into the day (not the Library), owned by the account.
     expect(queued.table).toBe('exercises');
     expect(queued.op).toBe('insert');
+    expect(queued.payload.day).toBe('Day 2');
     expect(queued.payload.user_id).toBe('U1');
-    expect(queued.payload.name).toBe('Cable Crunch');
-  });
+    expect(queued.payload.instructions).toEqual(['Step A', 'Step B']);
+    expect(queued.payload.image_key ?? null).toBeNull();
 
-  it('is a no-op when the name prompt is cancelled/blank', async () => {
-    app.prompt = () => '';
-
-    await app.addBlankExerciseToDraft();
-
-    expect(app.state.editDraft).toHaveLength(0);
-    expect(queued).toBeNull();
+    // Shows in the day's draft immediately and lands back on the edit view.
+    expect(app.state.exercises).toHaveLength(1);
+    expect(app.state.editDraft).toHaveLength(1);
+    expect(app.state.editDraft[0].name).toBe('Cable Crunch');
+    expect(app.state.editDirty).toBe(true);
+    expect(app.state.createExerciseTarget).toBeNull();
+    expect(nav).toBe('edit-day');
   });
 });
 

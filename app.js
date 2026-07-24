@@ -25,7 +25,6 @@ const state = {
   editDirty: false,
   routineDays: [],
   librarySearch: '',
-  libraryFilter: null,
   prCache: null,
   lastCache: null,
   historyCache: null,
@@ -1848,7 +1847,7 @@ function showAddToDayPicker(day) {
   requestAnimationFrame(() => sheet.querySelector('.group-picker-panel').classList.add('open'));
   sheet.querySelector('.group-picker-backdrop').addEventListener('click', closeGroupPicker);
   sheet.querySelector('.group-picker-cancel').addEventListener('click', closeGroupPicker);
-  sheet.querySelector('[data-add-blank]').addEventListener('click', () => { closeGroupPicker(); addBlankExerciseToDraft(); });
+  sheet.querySelector('[data-add-blank]').addEventListener('click', () => { closeGroupPicker(); openCreateExercise('editDay'); });
   sheet.querySelectorAll('[data-add-lib]').forEach(btn => {
     btn.addEventListener('click', () => {
       closeGroupPicker();
@@ -1863,25 +1862,19 @@ function showAddToDayPicker(day) {
   });
 }
 
-// Create a brand-new exercise (not from the Library) directly in the day being
-// edited. Named via prompt, same as "New day". Ownership is stamped by
-// toExerciseRow, so the new exercise stays private to the current account.
-async function addBlankExerciseToDraft() {
-  const name = (prompt('Name your new exercise (e.g. "Cable Crunch"):') || '').trim();
-  if (!name) return;
-  const row = {
-    id: uuid(), day: state.editDay, section: '', name,
-    equipment: '', weight_range: '', sets_target: 3, reps_target: '',
-    instructions: [], image_key: null, superset_group: null, sort_order: 0,
-  };
-  state.exercises.push(row);
-  state.editDraft.push({ ...row });
-  // Insert eagerly so a later edit's UPDATE has a row to update.
-  await DB.put('exercises', row);
-  await DB.queueSync('exercises', 'insert', toExerciseRow(row));
-  syncIfOnline();
-  state.editDirty = true;
-  renderView();
+// Open the create-exercise form. From the routine editor (target 'editDay') the
+// saved exercise drops straight into the day being edited; from the Library
+// (target null) it lands in the Library.
+function openCreateExercise(target = null) {
+  state.createExerciseTarget = target;
+  navigateTo('create-exercise', {}, 'forward');
+}
+
+// Leave the create form without saving, returning to wherever it was opened from.
+function cancelCreateExercise() {
+  const target = state.createExerciseTarget;
+  state.createExerciseTarget = null;
+  navigateTo(target === 'editDay' ? 'edit-day' : 'library', {}, 'back');
 }
 
 // Create a copy of an exercise from another day so it can be added without moving the original.
@@ -1959,7 +1952,7 @@ function renderLibrary() {
       <div class="page-title">Exercise Library</div>
     </div>
     <input id="lib-search" class="set-input" style="width:100%;box-sizing:border-box;margin-bottom:10px" placeholder="Search exercises…" value="${esc(state.librarySearch || '')}" />
-    <button class="add-exercise-btn" onclick="navigateTo('create-exercise', {}, 'forward')">+ Create new exercise</button>
+    <button class="add-exercise-btn" onclick="openCreateExercise()">+ Create new exercise</button>
     ${body}`;
 }
 
@@ -2036,7 +2029,7 @@ function renderCreateExercise() {
     </div>`;
   return `
     <div class="page-header">
-      <button class="back-btn" aria-label="Back" onclick="navigateTo('library', {}, 'back')">
+      <button class="back-btn" aria-label="Back" onclick="cancelCreateExercise()">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M19 12H5M12 5l-7 7 7 7"/></svg>
       </button>
       <div style="flex:1"><div class="page-title" style="font-size:18px">New exercise</div></div>
@@ -2054,7 +2047,11 @@ function renderCreateExercise() {
       </label>
     </div>
     <button class="btn btn-primary" onclick="submitNewExercise()">Create exercise</button>
-    <div style="font-size:12px;color:var(--text3);margin-top:10px;text-align:center">It lands in your Library — add it to a day from there.</div>`;
+    <div style="font-size:12px;color:var(--text3);margin-top:10px;text-align:center">${
+      state.createExerciseTarget === 'editDay'
+        ? `It’ll be added straight to ${esc(dayName(state.editDay) || state.editDay)}.`
+        : 'It lands in your Library — add it to a day from there.'
+    }</div>`;
 }
 
 function submitNewExercise() {
@@ -2064,8 +2061,10 @@ function submitNewExercise() {
   // One instruction step per line, mirroring built-in exercises' step lists so
   // a created exercise's detail view looks the same as an existing one.
   const instructions = val('ne-instructions').split('\n').map(s => s.trim()).filter(Boolean);
+  const toEditDay = state.createExerciseTarget === 'editDay';
+  const day = toEditDay ? state.editDay : 'Library';
   const ex = {
-    id: uuid(), day: 'Library', section: '', name,
+    id: uuid(), day, section: '', name,
     equipment: val('ne-equipment'), weight_range: '',
     // Targets are gone from the UI; sets_target>0 just marks "loggable"
     // (0 = note-only like Warmup/Abs) and every exercise starts at 3 sets.
@@ -2073,12 +2072,23 @@ function submitNewExercise() {
     instructions, image_key: null, superset_group: null, sort_order: 0,
   };
   state.exercises.push(ex);
+  // Insert eagerly (owned by the current account) so saveEditDay's later UPDATE
+  // has a row to update — it skips draft ids missing from the catalog.
   DB.put('exercises', ex);
   DB.queueSync('exercises', 'insert', toExerciseRow(ex));
   if (document.getElementById('ne-assisted')?.checked) setAssistedOverride(ex.id, true);
   syncIfOnline();
-  toast('Created — in your Library');
-  navigateTo('library', {}, 'back');
+  state.createExerciseTarget = null;
+  if (toEditDay) {
+    // Show it in the day immediately; saveEditDay finalizes order/section.
+    (state.editDraft = state.editDraft || []).push({ ...ex });
+    state.editDirty = true;
+    toast(`Added to ${dayName(day) || day}`);
+    navigateTo('edit-day', {}, 'back');
+  } else {
+    toast('Created — in your Library');
+    navigateTo('library', {}, 'back');
+  }
 }
 
 function saveExerciseNote(exerciseId, note) {
