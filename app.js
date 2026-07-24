@@ -1838,13 +1838,17 @@ function showAddToDayPicker(day) {
     <div class="group-picker-panel">
       <div class="group-picker-handle"></div>
       <div class="group-picker-title">Add to ${esc(day)}</div>
-      ${opts || '<div style="padding:8px 4px;color:var(--text2);font-size:14px">No exercises available to add.</div>'}
+      <button class="group-sheet-option group-sheet-create" data-add-blank="1">
+        <div><span class="group-sheet-label">+ New exercise</span><span class="group-sheet-meta">Not in your Library — name it yourself</span></div>
+      </button>
+      ${opts || '<div style="padding:8px 4px;color:var(--text2);font-size:14px">No Library exercises to add — create a new one above.</div>'}
       <button class="group-picker-cancel">Cancel</button>
     </div>`;
   document.body.appendChild(sheet);
   requestAnimationFrame(() => sheet.querySelector('.group-picker-panel').classList.add('open'));
   sheet.querySelector('.group-picker-backdrop').addEventListener('click', closeGroupPicker);
   sheet.querySelector('.group-picker-cancel').addEventListener('click', closeGroupPicker);
+  sheet.querySelector('[data-add-blank]').addEventListener('click', () => { closeGroupPicker(); addBlankExerciseToDraft(); });
   sheet.querySelectorAll('[data-add-lib]').forEach(btn => {
     btn.addEventListener('click', () => {
       closeGroupPicker();
@@ -1857,6 +1861,27 @@ function showAddToDayPicker(day) {
       }
     });
   });
+}
+
+// Create a brand-new exercise (not from the Library) directly in the day being
+// edited. Named via prompt, same as "New day". Ownership is stamped by
+// toExerciseRow, so the new exercise stays private to the current account.
+async function addBlankExerciseToDraft() {
+  const name = (prompt('Name your new exercise (e.g. "Cable Crunch"):') || '').trim();
+  if (!name) return;
+  const row = {
+    id: uuid(), day: state.editDay, section: '', name,
+    equipment: '', weight_range: '', sets_target: 3, reps_target: '',
+    instructions: [], image_key: null, superset_group: null, sort_order: 0,
+  };
+  state.exercises.push(row);
+  state.editDraft.push({ ...row });
+  // Insert eagerly so a later edit's UPDATE has a row to update.
+  await DB.put('exercises', row);
+  await DB.queueSync('exercises', 'insert', toExerciseRow(row));
+  syncIfOnline();
+  state.editDirty = true;
+  renderView();
 }
 
 // Create a copy of an exercise from another day so it can be added without moving the original.
@@ -1919,24 +1944,11 @@ function libRow(ex) {
 
 function renderLibrary() {
   const q = (state.librarySearch || '').toLowerCase().trim();
+  // Every exercise (built-in + manually created), deduped, sorted A→Z. No day
+  // tabs — the Library is one flat alphabetical list.
   const all = dedupeExercises(state.exercises.filter(e => !e._custom));
-  const dayLabels = (state.routineDays || []).map(d => d.label);
-  const f = state.libraryFilter || null; // null = All, a day label, or 'Other'
-  const match = e => {
-    if (q && !(e.name.toLowerCase().includes(q) || (e.equipment || '').toLowerCase().includes(q))) return false;
-    if (!f) return true;
-    if (f === 'Other') return !dayLabels.includes(e.day);
-    return e.day === f;
-  };
+  const match = e => !q || e.name.toLowerCase().includes(q) || (e.equipment || '').toLowerCase().includes(q);
   const list = all.filter(match).sort((a, b) => a.name.localeCompare(b.name));
-
-  const chip = (key, label) =>
-    `<button class="prog-chip ${(state.libraryFilter || null) === key ? 'active' : ''}" data-lib-filter="${key == null ? '' : esc(key)}">${esc(label)}</button>`;
-  const chips = [
-    chip(null, 'All'),
-    ...(state.routineDays || []).map(d => chip(d.label, d.name || d.label)),
-    chip('Other', 'Other'),
-  ].join('');
 
   const body = list.length
     ? list.map(libRow).join('')
@@ -1947,7 +1959,6 @@ function renderLibrary() {
       <div class="page-title">Exercise Library</div>
     </div>
     <input id="lib-search" class="set-input" style="width:100%;box-sizing:border-box;margin-bottom:10px" placeholder="Search exercises…" value="${esc(state.librarySearch || '')}" />
-    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">${chips}</div>
     <button class="add-exercise-btn" onclick="navigateTo('create-exercise', {}, 'forward')">+ Create new exercise</button>
     ${body}`;
 }
@@ -2033,7 +2044,10 @@ function renderCreateExercise() {
     <div class="card">
       ${field('Name', 'ne-name', '', 'e.g. Cable Crunch')}
       ${field('Equipment', 'ne-equipment', '', 'e.g. Cable Machine')}
-      ${field('Image key (optional)', 'ne-image', '', 'leave blank for an illustration')}
+      <div style="margin-bottom:12px">
+        <div class="detail-section-label">Instructions</div>
+        <textarea id="ne-instructions" class="set-input" style="width:100%;box-sizing:border-box;min-height:96px;resize:vertical" placeholder="One step per line"></textarea>
+      </div>
       <label style="display:flex;align-items:center;gap:10px;font-size:14px;cursor:pointer">
         <input id="ne-assisted" type="checkbox" style="width:18px;height:18px" />
         Assisted (lower weight = better)
@@ -2047,13 +2061,16 @@ function submitNewExercise() {
   const val = id => (document.getElementById(id)?.value || '').trim();
   const name = val('ne-name');
   if (!name) { toast('Name is required', 'error'); return; }
+  // One instruction step per line, mirroring built-in exercises' step lists so
+  // a created exercise's detail view looks the same as an existing one.
+  const instructions = val('ne-instructions').split('\n').map(s => s.trim()).filter(Boolean);
   const ex = {
     id: uuid(), day: 'Library', section: '', name,
     equipment: val('ne-equipment'), weight_range: '',
     // Targets are gone from the UI; sets_target>0 just marks "loggable"
     // (0 = note-only like Warmup/Abs) and every exercise starts at 3 sets.
     sets_target: 3, reps_target: '',
-    instructions: [], image_key: val('ne-image') || null, superset_group: null, sort_order: 0,
+    instructions, image_key: null, superset_group: null, sort_order: 0,
   };
   state.exercises.push(ex);
   DB.put('exercises', ex);
@@ -3902,9 +3919,6 @@ function bindViewEvents() {
       if (s) { s.focus(); const v = s.value; s.setSelectionRange(v.length, v.length); }
     });
   }
-  view.querySelectorAll('[data-lib-filter]').forEach(btn => {
-    btn.addEventListener('click', () => { state.libraryFilter = btn.dataset.libFilter || null; renderView(); });
-  });
   view.querySelectorAll('[data-lib-ex]').forEach(row => {
     row.addEventListener('click', () => showExerciseInfoSheet(row.dataset.libEx));
   });
