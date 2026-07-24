@@ -312,7 +312,9 @@ async function loadExercisesLocal() {
 async function seedExercises() {
   state.seeding = true;
   renderSeedingOverlay();
-  const batches = chunk(EXERCISES, 25);
+  const uid = Supabase.getUser()?.id;
+  // Each account is seeded its OWN private copy of the default program.
+  const batches = chunk(EXERCISES.map(e => ({ ...e, user_id: uid })), 25);
   for (const batch of batches) {
     try { await Supabase.insertExercises(batch); } catch (_) {}
   }
@@ -322,8 +324,9 @@ async function seedExercises() {
 async function syncNewExercises(remoteExs) {
   // Check by name only — exercises can move between days/Library so day::name
   // matching would re-insert moved exercises as duplicates.
+  const uid = Supabase.getUser()?.id;
   const remoteNames = new Set(remoteExs.map(e => e.name));
-  const missing = EXERCISES.filter(e => !remoteNames.has(e.name));
+  const missing = EXERCISES.filter(e => !remoteNames.has(e.name)).map(e => ({ ...e, user_id: uid }));
   if (!missing.length) return false;
   const batches = chunk(missing, 25);
   for (const batch of batches) {
@@ -345,7 +348,8 @@ async function loadRoutineDays() {
     try {
       let days = await Supabase.getRoutineDays();
       if (!days || days.length === 0) {
-        days = DEFAULT_ROUTINE_DAYS.map(d => ({ id: uuid(), archived: false, ...d }));
+        const uid = Supabase.getUser()?.id;
+        days = DEFAULT_ROUTINE_DAYS.map(d => ({ id: uuid(), archived: false, user_id: uid, ...d }));
         for (const d of days) { try { await Supabase.insert('routine_days', d); } catch (_) {} }
       }
       await DB.bulkPut('routine_days', days);
@@ -374,7 +378,7 @@ async function createNewDay() {
   const nums = (state.routineDays || []).map(d => parseInt((d.label || '').replace(/\D/g, '')) || 0);
   const label = `Day ${Math.max(0, ...nums) + 1}`;
   const sort_order = (state.routineDays || []).reduce((m, d) => Math.max(m, d.sort_order || 0), 0) + 1;
-  const row = { id: uuid(), label, name, muscles: '', color: '#00897B', sort_order, archived: false };
+  const row = { id: uuid(), label, name, muscles: '', color: '#00897B', sort_order, archived: false, user_id: Supabase.getUser()?.id };
   state.routineDays.push(row);
   await DB.put('routine_days', row);
   await DB.queueSync('routine_days', 'insert', row);
@@ -383,6 +387,9 @@ async function createNewDay() {
 }
 
 async function persistRoutineDay(row) {
+  // Row already belongs to this user, but stamp defensively so a pre-migration
+  // cached row (no user_id) can't fail the per-user RLS check on write.
+  if (!row.user_id) row.user_id = Supabase.getUser()?.id;
   await DB.put('routine_days', row);
   await DB.queueSync('routine_days', 'update', row);
   syncIfOnline();
@@ -1580,10 +1587,14 @@ function addExerciseToGroup(exId, supersetId) {
 // ── Routine editing: persistence to the exercises catalog ────────────
 // Supabase `exercises` columns (note: `muscles` is NOT a column — it lives in
 // the bundled EXERCISES constant only, so we must never send it in a payload).
-const EXERCISE_COLUMNS = ['id','day','section','name','equipment','weight_range','sets_target','reps_target','instructions','image_key','superset_group','sort_order','bar_weight_lbs'];
+const EXERCISE_COLUMNS = ['id','day','section','name','equipment','weight_range','sets_target','reps_target','instructions','image_key','superset_group','sort_order','bar_weight_lbs','user_id'];
 function toExerciseRow(ex) {
   const row = {};
   for (const k of EXERCISE_COLUMNS) if (ex[k] !== undefined) row[k] = ex[k];
+  // Ownership is set from the signed-in user, never trusted from the source
+  // object — every exercise row must belong to the account that writes it.
+  const uid = Supabase.getUser()?.id;
+  if (uid) row.user_id = uid;
   return row;
 }
 async function persistExercise(ex) {

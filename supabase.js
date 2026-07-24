@@ -125,11 +125,15 @@ const Supabase = (() => {
   // ── Data ──────────────────────────────────────────────────────────
 
   async function getExercises() {
-    return restReq('/exercises?select=*&order=day,sort_order');
+    const uid = _session?.user?.id;
+    if (!uid) return [];
+    return restReq(`/exercises?select=*&user_id=eq.${uid}&order=day,sort_order`);
   }
 
   async function getRoutineDays() {
-    return restReq('/routine_days?select=*&order=sort_order');
+    const uid = _session?.user?.id;
+    if (!uid) return [];
+    return restReq(`/routine_days?select=*&user_id=eq.${uid}&order=sort_order`);
   }
 
   async function insertExercises(batch) {
