@@ -28,3 +28,7 @@ how the vm-based harness loads this bundler-free app's scripts.
 - When adding error handling, write a test that triggers the error.
 - When adding a conditional (if/else, switch), write tests for BOTH paths.
 - Never commit code that makes existing tests fail.
+
+## Release documentation
+
+See `CHANGELOG.md` for shipped changes and `VERSION` for the current release version.
