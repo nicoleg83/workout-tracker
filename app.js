@@ -71,6 +71,37 @@ function dedupeSetLogs(logs) {
   }
   return Array.from(bySet.values()).sort((a, b) => a.set_number - b.set_number);
 }
+
+function setVolume(set) {
+  return (set?.weight_lbs || 0) * (set?.reps || 0);
+}
+
+function isMeaningfulCompletedSet(set) {
+  return !!set?.completed
+    && (set.weight_lbs != null || set.reps != null || String(set.notes || '').trim());
+}
+
+function isBetterSet(candidate, current, assisted) {
+  if (!candidate) return false;
+  if (assisted) {
+    if (candidate.weight_lbs == null) return false;
+    return !current || current.weight_lbs == null || candidate.weight_lbs < current.weight_lbs;
+  }
+  if (setVolume(candidate) <= 0) return false;
+  if (!current) return true;
+  return setVolume(candidate) > setVolume(current);
+}
+
+function isSameSetPerformance(set, performance) {
+  return (set?.weight_lbs ?? 0) === (performance?.weight_lbs ?? 0)
+    && (set?.reps ?? 0) === (performance?.reps ?? 0);
+}
+
+function compareRecencyDesc(a, b) {
+  const dateOrder = (b?.date || '').localeCompare(a?.date || '');
+  if (dateOrder) return dateOrder;
+  return (b?.createdAt || b?.created_at || '').localeCompare(a?.createdAt || a?.created_at || '');
+}
 function daysAgo(d) {
   // Compare midnight-to-midnight so "Today" never flips to "Yesterday" mid-day
   const todayMs = new Date(today() + 'T00:00:00').getTime();
@@ -114,6 +145,14 @@ function fmtWeight(weightLbs, notes) {
   if (weightLbs != null && weightLbs !== 0) return weightLbs + ' lbs';
   if (notes) return notes;
   return null;
+}
+function fmtSetPerformance(set) {
+  if (!set) return '—';
+  const weight = fmtWeight(set.weight_lbs, set.notes);
+  if (weight && set.reps != null) return `${esc(weight)} × ${set.reps}`;
+  if (weight) return esc(weight);
+  if (set.reps != null) return `${set.reps} reps`;
+  return '—';
 }
 // Escape user-entered text before injecting into innerHTML (notes, etc.)
 function esc(s) {
@@ -484,9 +523,9 @@ async function loadSessions() {
     }
     state.sessions = all
       .filter(s => s.user_id === state.user.id)
-      .sort((a, b) => b.date.localeCompare(a.date));
+      .sort(compareRecencyDesc);
   } else {
-    state.sessions = all.sort((a, b) => b.date.localeCompare(a.date));
+    state.sessions = all.sort(compareRecencyDesc);
   }
 }
 
@@ -496,55 +535,81 @@ async function loadSessions() {
 async function loadSessionsLocal() {
   const all = await DB.getAll('sessions');
   state.sessions = (state.user?.id ? all.filter(s => s.user_id === state.user.id) : all)
-    .sort((a, b) => b.date.localeCompare(a.date));
+    .sort(compareRecencyDesc);
 }
 
 async function loadLastLogs(day) {
+  state.lastLogs = {};
+  // Snapshot unsynced local rows before the remote read. If synchronization
+  // finishes during this function, these rows still belong in the prefill.
+  let pendingSetRows = [];
+  try {
+    pendingSetRows = (await DB.getAll('pending_sync'))
+      .filter(p => p.table === 'set_logs' && p.operation !== 'delete' && p.payload)
+      .map(p => p.payload);
+  } catch (_) {}
   const sessionsByDay = state.sessions
     .filter(s => s.day === day && !s.deleted_at)
-    .sort((a, b) => b.date.localeCompare(a.date));
+    .sort(compareRecencyDesc);
 
-  if (!sessionsByDay.length) return;
-  let lastSession = sessionsByDay[0];
-  if (state.activeSession && lastSession.id === state.activeSession.id) {
-    if (sessionsByDay.length < 2) return;
-    lastSession = sessionsByDay[1];
+  // Fetch the previous same-day session when one exists. This keeps a newly
+  // finished workout available for immediate prefill even before progress data
+  // is recalculated, while excluding the workout currently being resumed.
+  const lastSession = sessionsByDay.find(s => s.id !== state.activeSession?.id);
+  let directReadSucceeded = false;
+  if (lastSession) {
+    let logs;
+    try {
+      logs = await Supabase.getSetLogs(lastSession.id);
+      directReadSucceeded = true;
+    } catch (_) {
+      logs = await DB.getAll('set_logs', 'session_id', lastSession.id);
+    }
+
+    const pendingForSession = pendingSetRows.filter(row => row.session_id === lastSession.id);
+    for (const log of [...logs, ...pendingForSession].filter(isMeaningfulCompletedSet)) {
+      if (!state.lastLogs[log.exercise_id]) state.lastLogs[log.exercise_id] = [];
+      state.lastLogs[log.exercise_id].push(log);
+    }
   }
 
-  let logs;
-  try {
-    logs = await Supabase.getSetLogs(lastSession.id);
-  } catch (_) {
-    logs = await DB.getAll('set_logs', 'session_id', lastSession.id);
-  }
-
-  state.lastLogs = {};
-  for (const log of logs) {
-    if (!state.lastLogs[log.exercise_id]) state.lastLogs[log.exercise_id] = [];
-    state.lastLogs[log.exercise_id].push(log);
-  }
   // Collapse any duplicate set_number rows (orphans from offline un-completes)
   // so both the prefill and the "Last session" card show each set once.
   for (const exId of Object.keys(state.lastLogs)) {
     state.lastLogs[exId] = dedupeSetLogs(state.lastLogs[exId]);
   }
 
-  // Fallback for exercises not logged in the immediately-previous session:
-  // pull the most recent session that DID log them, so prefill + the PR card
-  // never vanish just because you skipped an exercise last time. state.lastCache
-  // (built by loadProgressData from all history) is already cross-day/image_key
-  // merged, so an exercise's own entry there is its true "last time performed" —
-  // even if that was several sessions ago, or under a sibling exercise sharing
-  // an image_key. Skip the active session so we never prefill from itself.
-  if (state.lastCache) {
+  // Prefer each exercise's own most recent historical session, regardless of
+  // workout day. historyCache is already cross-day/image_key merged. Searching
+  // it also lets resume skip the active session and use the next-most-recent
+  // values instead of returning blank. The directly-fetched same-day session
+  // remains a fallback when progress history has not been built yet.
+  if (state.historyCache || state.lastCache) {
     for (const ex of state.exercises.filter(e => e.day === day)) {
-      if (state.lastLogs[ex.id]?.length) continue;
-      const entry = state.lastCache[ex.id];
-      if (entry?.sets?.length && entry.sessionId !== state.activeSession?.id) {
-        state.lastLogs[ex.id] = entry.sets;
+      const activeId = state.activeSession?.id;
+      const directHasExercise = !!state.lastLogs[ex.id]?.length;
+      const authoritativeMiss = entry => directReadSucceeded
+        && lastSession
+        && entry?.sessionId === lastSession.id
+        && !directHasExercise;
+      const historical = (state.historyCache?.[ex.id] || []).find(entry =>
+        entry.sessionId !== activeId && !authoritativeMiss(entry)
+      );
+      const cached = state.lastCache?.[ex.id];
+      const entry = historical
+        || (cached?.sessionId !== activeId && !authoritativeMiss(cached) ? cached : null);
+      const directEntry = directHasExercise ? lastSession : null;
+      if (!entry?.sets?.length) continue;
+      if (directEntry && entry.sessionId === directEntry.id) {
+        // Direct rows and explicitly pending local rows were already merged.
+        // Do not replace them with a potentially stale history snapshot.
+        continue;
+      } else if (!directEntry || compareRecencyDesc(entry, directEntry) < 0) {
+        state.lastLogs[ex.id] = dedupeSetLogs(entry.sets);
       }
     }
   }
+
 }
 
 async function loadProgressData() {
@@ -566,19 +631,23 @@ async function loadProgressData() {
     }
   }
 
-  const completed = allLogs.filter(l => l.completed && l.weight_lbs != null);
-  const sessionDateMap = {};
+  // Reps-only and bodyweight sets still belong in last/history caches so their
+  // fields can prefill. PR comparison separately rejects zero-volume sets.
+  const completed = allLogs.filter(isMeaningfulCompletedSet);
+  const sessionMetaMap = {};
   // Soft-deleted sessions keep their logs (for Restore) but stop counting
   // toward PRs, charts, and last-session prefills.
-  for (const s of state.sessions) { if (!s.deleted_at) sessionDateMap[s.id] = s.date; }
+  for (const s of state.sessions) {
+    if (!s.deleted_at) sessionMetaMap[s.id] = { date: s.date, createdAt: s.created_at || '' };
+  }
 
   const byEx = {};
   for (const log of completed) {
-    const date = sessionDateMap[log.session_id];
-    if (!date) continue;
+    const sessionMeta = sessionMetaMap[log.session_id];
+    if (!sessionMeta?.date) continue;
     if (!byEx[log.exercise_id]) byEx[log.exercise_id] = {};
     if (!byEx[log.exercise_id][log.session_id]) {
-      byEx[log.exercise_id][log.session_id] = { date, sets: [] };
+      byEx[log.exercise_id][log.session_id] = { ...sessionMeta, sets: [] };
     }
     byEx[log.exercise_id][log.session_id].sets.push(log);
   }
@@ -590,35 +659,25 @@ async function loadProgressData() {
   for (const [exId, sessMap] of Object.entries(byEx)) {
     const assisted = isAssistedById(exId); // lower weight is better
     const history = Object.entries(sessMap)
-      .map(([sid, { date, sets }]) => {
-        const best = sets.reduce((b, s) => {
-          if (!b) return s;
-          if (assisted) {
-            if (s.weight_lbs < b.weight_lbs) return s;
-          } else {
-            const sVol = (s.weight_lbs || 0) * (s.reps || 0);
-            const bVol = (b.weight_lbs || 0) * (b.reps || 0);
-            if (sVol > bVol) return s;
-          }
-          return b;
-        }, null);
-        return { sessionId: sid, date, sets: sets.sort((a, b) => a.set_number - b.set_number), bestSet: best };
+      .map(([sid, { date, createdAt, sets }]) => {
+        const bestSet = sets.reduce((b, s) => isBetterSet(s, b, assisted) ? s : b, null);
+        const displaySet = bestSet || sets[0] || null;
+        return {
+          sessionId: sid,
+          date,
+          createdAt,
+          sets: sets.sort((a, b) => a.set_number - b.set_number),
+          bestSet,
+          displaySet,
+        };
       })
-      .sort((a, b) => b.date.localeCompare(a.date));
+      .sort(compareRecencyDesc);
     state.historyCache[exId] = history;
     if (history.length > 0) state.lastCache[exId] = history[0];
     let pr = null;
     for (const sess of history) {
-      if (!sess.bestSet) continue;
-      if (!pr) {
-        pr = { weight_lbs: sess.bestSet.weight_lbs, reps: sess.bestSet.reps, date: sess.date };
-      } else if (assisted) {
-        if (sess.bestSet.weight_lbs != null && sess.bestSet.weight_lbs < pr.weight_lbs)
-          pr = { weight_lbs: sess.bestSet.weight_lbs, reps: sess.bestSet.reps, date: sess.date };
-      } else {
-        const vol = (sess.bestSet.weight_lbs || 0) * (sess.bestSet.reps || 0);
-        const prVol = (pr.weight_lbs || 0) * (pr.reps || 0);
-        if (vol > prVol) pr = { weight_lbs: sess.bestSet.weight_lbs, reps: sess.bestSet.reps, date: sess.date };
+      if (isBetterSet(sess.bestSet, pr, assisted)) {
+        pr = { weight_lbs: sess.bestSet.weight_lbs, reps: sess.bestSet.reps, date: sess.date, sessionId: sess.sessionId };
       }
     }
     if (pr) state.prCache[exId] = pr;
@@ -633,10 +692,7 @@ async function loadProgressData() {
     const assisted = isAssistedById(exId);
     const cur = prByKey[key];
     if (!cur) { prByKey[key] = { pr, assisted }; continue; }
-    const isBetter = assisted
-      ? pr.weight_lbs < cur.pr.weight_lbs
-      : (pr.weight_lbs || 0) * (pr.reps || 0) > (cur.pr.weight_lbs || 0) * (cur.pr.reps || 0);
-    if (isBetter) prByKey[key] = { pr, assisted };
+    if (isBetterSet(pr, cur.pr, assisted)) prByKey[key] = { pr, assisted };
   }
   for (const ex of state.exercises) {
     const key = ex?.image_key;
@@ -644,10 +700,7 @@ async function loadProgressData() {
     const { pr: best, assisted } = prByKey[key];
     const local = state.prCache[ex.id];
     if (!local) { state.prCache[ex.id] = best; continue; }
-    const isBetter = assisted
-      ? best.weight_lbs < local.weight_lbs
-      : (best.weight_lbs || 0) * (best.reps || 0) > (local.weight_lbs || 0) * (local.reps || 0);
-    if (isBetter) state.prCache[ex.id] = best;
+    if (isBetterSet(best, local, assisted)) state.prCache[ex.id] = best;
   }
 
   // Cross-day last session: exercises sharing the same image_key share
@@ -657,13 +710,13 @@ async function loadProgressData() {
     const ex = state.exercises.find(e => e.id === exId);
     const key = ex?.image_key;
     if (!key) continue;
-    if (!lastByKey[key] || entry.date > lastByKey[key].date) lastByKey[key] = entry;
+    if (!lastByKey[key] || compareRecencyDesc(entry, lastByKey[key]) < 0) lastByKey[key] = entry;
   }
   for (const ex of state.exercises) {
     const key = ex?.image_key;
     if (!key || !lastByKey[key]) continue;
     const local = state.lastCache[ex.id];
-    if (!local || lastByKey[key].date > local.date) state.lastCache[ex.id] = lastByKey[key];
+    if (!local || compareRecencyDesc(lastByKey[key], local) < 0) state.lastCache[ex.id] = lastByKey[key];
   }
 
   // Cross-day history: same idea, merged and re-sorted so Progress charts
@@ -677,7 +730,7 @@ async function loadProgressData() {
     historyByKey[key].push(...hist);
   }
   for (const key of Object.keys(historyByKey)) {
-    historyByKey[key].sort((a, b) => b.date.localeCompare(a.date));
+    historyByKey[key].sort(compareRecencyDesc);
   }
   for (const ex of state.exercises) {
     const key = ex?.image_key;
@@ -695,18 +748,14 @@ function checkPR(exerciseId, weight, reps) {
   if (w == null && r === 0) return;
   const pr = state.prCache[exerciseId];
   const assisted = isAssistedById(exerciseId);
-  let isNewPR = false;
-  if (!pr) {
-    isNewPR = true;
-  } else if (assisted) {
-    isNewPR = w != null && w < pr.weight_lbs;
-  } else {
-    const vol = (w ?? 0) * r;
-    const prVol = (pr.weight_lbs ?? 0) * (pr.reps || 0);
-    isNewPR = vol > prVol;
-  }
+  const isNewPR = isBetterSet({ weight_lbs: w, reps: r }, pr, assisted);
   if (isNewPR) {
-    state.prCache[exerciseId] = { weight_lbs: w, reps: r, date: today() };
+    state.prCache[exerciseId] = {
+      weight_lbs: w,
+      reps: r,
+      date: today(),
+      sessionId: state.activeSession?.id || null,
+    };
     const ex = state.sessionExercises.find(e => e.id === exerciseId)
             || state.exercises.find(e => e.id === exerciseId);
     const name = ex?.name || 'Exercise';
@@ -785,6 +834,10 @@ function makeCustomExercise(day, sessionId, idx) {
 }
 
 async function startSession(day) {
+  // A just-finished workout invalidates the cross-day history caches. Rebuild
+  // them before choosing prefills so another workout started immediately can
+  // use the values that were just logged on a different day.
+  if (!state.progressLoaded) await loadProgressData();
   const base = state.exercises.filter(e => e.day === day).sort((a,b) => a.sort_order - b.sort_order);
   await loadLastLogs(day);
   state.skipped = new Set();
@@ -2966,15 +3019,14 @@ function renderSessionDetail() {
   // Helper: render a set-log card for one exercise
   function renderSetCard(exId, name, sets, exNote) {
     const prData = state.prCache?.[exId];
-    const isThePRSession = !!(prData?.date && session.date === prData.date);
+    const isThePRSession = !!(prData?.sessionId && session.id === prData.sessionId);
     let prSetIdx = -1;
     if (isThePRSession && prData?.weight_lbs != null) {
-      let bestW = -1, bestR = -1;
-      sets.forEach((s, idx) => {
-        const w = s.weight_lbs ?? 0; const r = s.reps ?? 0;
-        if (w > bestW || (w === bestW && r > bestR)) { bestW = w; bestR = r; prSetIdx = idx; }
-      });
-      if ((sets[prSetIdx]?.weight_lbs ?? 0) !== prData.weight_lbs) prSetIdx = -1;
+      // prCache already identifies the all-time best individual set using
+      // weight × reps (or lower assistance weight for assisted exercises).
+      // Match that exact set here instead of independently picking the heaviest
+      // row, which could hide the badge from a higher-volume, lighter set.
+      prSetIdx = sets.findIndex(s => isSameSetPerformance(s, prData));
     }
     const rows = sets.map((s, idx) => `
       <div class="sdet-set-row">
@@ -3092,11 +3144,12 @@ function renderProgress() {
       const last = state.lastCache?.[ex.id];
       const pr = state.prCache?.[ex.id];
       const history = state.historyCache?.[ex.id] || [];
+      const weightedHistory = history.filter(entry => entry.bestSet?.weight_lbs != null);
 
       let trendEl = '';
-      if (history.length >= 2) {
-        const lastW = history[0].bestSet?.weight_lbs || 0;
-        const prevW = history[1].bestSet?.weight_lbs || 0;
+      if (weightedHistory.length >= 2) {
+        const lastW = weightedHistory[0].bestSet.weight_lbs;
+        const prevW = weightedHistory[1].bestSet.weight_lbs;
         if (lastW > prevW) trendEl = `<div class="prog-trend up">↑</div>`;
         else if (lastW < prevW) trendEl = `<div class="prog-trend down">↓</div>`;
         else trendEl = `<div class="prog-trend flat">→</div>`;
@@ -3106,11 +3159,11 @@ function renderProgress() {
         ? `<img class="prog-thumb-img" src="icons/exercises/${ex.image_key}.webp" alt="" loading="lazy">`
         : `<div class="prog-thumb-icon">💪</div>`;
 
-      const isPR = pr && last && pr.date === last.date;
+      const isPR = pr && last && pr.sessionId === last.sessionId;
       const prBadge = isPR ? ` <span class="pr-badge">🏆 PR</span>` : '';
 
       const lastVal = last
-        ? `${fmtWeight(last.bestSet.weight_lbs, last.bestSet.notes) || last.bestSet.weight_lbs + ' lbs'} × ${last.bestSet.reps}${prBadge}`
+        ? `${fmtSetPerformance(last.displaySet || last.bestSet)}${prBadge}`
         : `<span class="prog-no-data">No data yet</span>`;
 
       rowsHtml += `
@@ -3217,10 +3270,10 @@ function buildProgressChart(history, pr, range) {
     trendLine = `<line x1="${tx0.toFixed(1)}" y1="${(slope * tx0 + intercept).toFixed(1)}" x2="${tx1.toFixed(1)}" y2="${(slope * tx1 + intercept).toFixed(1)}" stroke="#606060" stroke-width="1" stroke-dasharray="3,3" opacity="0.5"/>`;
   }
 
-  const prDate = pr?.date;
+  const prSessionId = pr?.sessionId;
   const dots = history.map((h, i) => {
     const cx = toX(i).toFixed(1), cy = toY(h.bestSet.weight_lbs).toFixed(1);
-    if (h.date === prDate) {
+    if (h.sessionId === prSessionId) {
       return `<circle cx="${cx}" cy="${cy}" r="7" fill="#f59e0b" stroke="#f59e0b" stroke-width="2"/>
         <text x="${cx}" y="${(parseFloat(cy) - 11).toFixed(1)}" fill="#f59e0b" font-size="10" font-family="-apple-system,sans-serif" text-anchor="middle" font-weight="700">PR</text>`;
     }
@@ -3233,8 +3286,8 @@ function buildProgressChart(history, pr, range) {
     if (i % step !== 0 && i !== history.length - 1) return '';
     const d = new Date(h.date + 'T00:00:00');
     const label = `${d.toLocaleString('en-US', { month: 'short' })} ${d.getDate()}`;
-    const fill = h.date === prDate ? '#f59e0b' : '#606060';
-    const fw = h.date === prDate ? '700' : '400';
+    const fill = h.sessionId === prSessionId ? '#f59e0b' : '#606060';
+    const fw = h.sessionId === prSessionId ? '700' : '400';
     return `<text x="${toX(i).toFixed(1)}" y="${svgH - 4}" fill="${fill}" font-size="9" font-family="-apple-system,sans-serif" text-anchor="middle" font-weight="${fw}">${label}</text>`;
   }).join('');
 
@@ -3295,7 +3348,8 @@ function renderProgressExercise() {
   const maxDays = cutoffDays[range] ?? 90;
   const nowMs = new Date(today() + 'T00:00:00').getTime();
   const chartHistory = history
-    .filter(h => (nowMs - new Date(h.date + 'T00:00:00').getTime()) / 86400000 <= maxDays)
+    .filter(h => h.bestSet?.weight_lbs != null
+      && (nowMs - new Date(h.date + 'T00:00:00').getTime()) / 86400000 <= maxDays)
     .slice().reverse();
 
   const chartHtml = buildProgressChart(chartHistory, pr, range);
@@ -3312,13 +3366,13 @@ function renderProgressExercise() {
   };
 
   const histRows = history.map(h => {
-    const isPR = pr && h.date === pr.date;
+    const isPR = pr && h.sessionId === pr.sessionId;
     const note = noteFor(h.sessionId);
     return `
       <div class="prog-hist-row">
         <div class="prog-hist-date">${fmtDate(h.date)}</div>
         <div class="prog-hist-info">
-          <div class="prog-hist-best">${fmtWeight(h.bestSet.weight_lbs, h.bestSet.notes) || h.bestSet.weight_lbs + ' lbs'} × ${h.bestSet.reps}</div>
+          <div class="prog-hist-best">${fmtSetPerformance(h.displaySet || h.bestSet)}</div>
           <div class="prog-hist-sub">${h.sets.length} set${h.sets.length !== 1 ? 's' : ''} total</div>
         </div>
         ${isPR ? `<div class="pr-badge">🏆 PR</div>` : ''}
