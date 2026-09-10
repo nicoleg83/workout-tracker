@@ -2,6 +2,12 @@
 
 All notable changes to the Workout Tracker are documented in this file.
 
+## [0.0.2.2] - 2026-09-09
+
+### Added
+
+- Run a private Supabase keep-alive three times daily to reduce the risk of free-tier inactivity pauses.
+
 ## [0.0.2.1] - 2026-09-09
 
 ### Fixed
