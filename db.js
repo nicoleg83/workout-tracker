@@ -146,8 +146,10 @@ const DB = (() => {
     await del('pending_sync', item.id);
   }
 
-  async function failSyncItem(item) {
-    item.attempts += 1;
+  async function failSyncItem(item, error) {
+    item.attempts = (item.attempts || 0) + 1;
+    item.last_error = error?.message || String(error || 'Unknown sync error');
+    item.last_attempt_at = new Date().toISOString();
     await put('pending_sync', item);
   }
 
@@ -162,7 +164,7 @@ const DB = (() => {
       }
       await completeSyncItem(item);
     } catch (err) {
-      await failSyncItem(item);
+      await failSyncItem(item, err);
     }
   }
 

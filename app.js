@@ -1207,6 +1207,10 @@ async function retryPendingItem(id) {
     await DB.del('pending_sync', item.id);
     toast('Synced successfully', 'success');
   } catch (err) {
+    item.attempts = (item.attempts || 0) + 1;
+    item.last_error = err?.message || String(err || 'Unknown sync error');
+    item.last_attempt_at = new Date().toISOString();
+    await DB.put('pending_sync', item);
     toast(`Failed: ${err.message}`, 'error');
   }
   await openRecovery();
@@ -3544,6 +3548,7 @@ function renderRecovery() {
         <div>
           <div class="session-card-day">${esc(p.table)} · ${esc(p.operation)}</div>
           <div class="session-card-date">${esc(new Date(p.created_at).toLocaleString())} · attempts: ${p.attempts}</div>
+          ${p.last_error ? `<div style="color:var(--danger);font-size:12px;margin-top:6px">${esc(p.last_error)}</div>` : ''}
         </div>
       </div>
       <div class="session-card-stats" style="white-space:pre-wrap;word-break:break-all;font-family:monospace;font-size:11px;text-align:left">${esc(JSON.stringify(p.payload))}</div>

@@ -117,6 +117,8 @@ describe('durable sync queue', () => {
     const queued = await ctx.DB.getAll('pending_sync');
     expect(queued.map(item => item.payload.id)).toEqual(['bad-log']);
     expect(queued[0].attempts).toBe(1);
+    expect(queued[0].last_error).toBe('row rejected');
+    expect(queued[0].last_attempt_at).toBeTruthy();
     expect((await ctx.DB.get('set_logs', 'good-log'))._sync_pending).toBe(false);
     expect((await ctx.DB.get('set_logs', 'bad-log'))._sync_pending).toBe(true);
   });

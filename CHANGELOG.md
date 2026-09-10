@@ -2,6 +2,12 @@
 
 All notable changes to the Workout Tracker are documented in this file.
 
+## [0.0.2.1] - 2026-09-09
+
+### Fixed
+
+- Show the last Supabase error for each row that remains in the recovery queue.
+
 ## [0.0.2.0] - 2026-09-09
 
 ### Fixed
