@@ -1,0 +1,19 @@
+{
+  "captured_at": "2026-09-09T21:20:00-04:00",
+  "source": "User-provided iPhone recovery-screen screenshot",
+  "observed": {
+    "sync_status": "yellow_pending",
+    "pending_sync_count": 680,
+    "sample_items": [
+      "ffd3bf02-8c13-4fba-bce6-9eceb574b58e",
+      "ff9768dc-ea41-4e4c-b4f4-b4994332dfdc"
+    ]
+  },
+  "server_check": {
+    "project_status": "ACTIVE_HEALTHY",
+    "sample_items_already_present": true,
+    "set_log_count_before_fix": 661,
+    "set_log_id_checksum_before_fix": "99c10ddfe6752758968dc12736e27bf8"
+  },
+  "expected": "Previously synced records are not re-queued. Truly pending records remain queued until Supabase confirms them."
+}

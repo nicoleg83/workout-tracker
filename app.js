@@ -1079,6 +1079,7 @@ async function toggleComplete(exerciseId, setIndex) {
       notes: weightNote,
       logged_at: new Date().toISOString(),
       synced_at: new Date().toISOString(),
+      _sync_pending: true,
     };
     set._logId = log.id;
     await DB.put('set_logs', log);
@@ -1138,13 +1139,28 @@ async function requeueOrphanedSetLogs() {
   // This recovers from cases where pending_sync was cleared, or entries were lost.
   // With merge-duplicates inserts, re-queuing is safe even if the log is already in Supabase.
   const allLogs = await DB.getAll('set_logs');
-  const completedLogs = allLogs.filter(l => l.completed);
+  // Only records explicitly marked as awaiting confirmation are recoverable
+  // orphans. Legacy and server-fetched rows have no marker and are already
+  // synced; re-queuing every completed row caused hundreds of duplicate writes
+  // and a yellow status light on every launch.
+  const completedLogs = allLogs.filter(l => l.completed && l._sync_pending === true);
   if (!completedLogs.length) return;
   const pending = await DB.getAll('pending_sync');
   const queuedIds = new Set(
     pending.filter(p => p.table === 'set_logs').map(p => p.payload?.id)
   );
+  const queuedSessionIds = new Set(
+    pending.filter(p => p.table === 'sessions').map(p => p.payload?.id)
+  );
+  const sessions = await DB.getAll('sessions');
   for (const log of completedLogs) {
+    if (!queuedSessionIds.has(log.session_id)) {
+      const session = sessions.find(s => s.id === log.session_id);
+      if (session) {
+        await DB.queueSync('sessions', 'insert', toSessionRow(session));
+        queuedSessionIds.add(log.session_id);
+      }
+    }
     if (!queuedIds.has(log.id)) {
       await DB.queueSync('set_logs', 'insert', log);
     }
@@ -1186,6 +1202,8 @@ async function retryPendingItem(id) {
   try {
     if (item.operation === 'insert') await Supabase.insert(item.table, item.payload);
     else if (item.operation === 'update') await Supabase.update(item.table, item.payload);
+    else if (item.operation === 'delete') await Supabase.deleteRecord(item.table, item.payload.id);
+    await DB.setSyncPending(item.table, item.payload?.id, false);
     await DB.del('pending_sync', item.id);
     toast('Synced successfully', 'success');
   } catch (err) {

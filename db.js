@@ -97,21 +97,36 @@ const DB = (() => {
     });
   }
 
+  // Local records may carry private bookkeeping fields. Never send those to
+  // Supabase, whose tables intentionally do not have matching columns.
+  function remotePayload(payload) {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return payload;
+    return Object.fromEntries(Object.entries(payload).filter(([key]) => !key.startsWith('_')));
+  }
+
+  async function setSyncPending(table, id, pending) {
+    if (!id || (table !== 'sessions' && table !== 'set_logs')) return;
+    const local = await get(table, id);
+    if (local) await put(table, { ...local, _sync_pending: pending });
+  }
+
   // Queue a write for later sync. A newer write to the same row supersedes any
   // still-queued one (same table + operation + payload id), so an offline
   // session doesn't pile up dozens of stale snapshots of the same record —
   // only the latest payload flushes.
   async function queueSync(table, operation, payload) {
-    if (payload?.id) {
+    const queuedPayload = remotePayload(payload);
+    if (queuedPayload?.id) {
       const pending = await getAll('pending_sync');
       for (const p of pending) {
-        if (p.table === table && p.operation === operation && p.payload?.id === payload.id) {
+        if (p.table === table && p.operation === operation && p.payload?.id === queuedPayload.id) {
           await del('pending_sync', p.id);
         }
       }
+      if (operation !== 'delete') await setSyncPending(table, queuedPayload.id, true);
     }
     const id = crypto.randomUUID();
-    await put('pending_sync', { id, table, operation, payload, created_at: Date.now(), attempts: 0 });
+    await put('pending_sync', { id, table, operation, payload: queuedPayload, created_at: Date.now(), attempts: 0 });
   }
 
   // Drop every queued write belonging to a session (the session row itself and
@@ -126,7 +141,33 @@ const DB = (() => {
     }
   }
 
-  // Flush pending_sync to Supabase
+  async function completeSyncItem(item) {
+    if (item.operation !== 'delete') await setSyncPending(item.table, item.payload?.id, false);
+    await del('pending_sync', item.id);
+  }
+
+  async function failSyncItem(item) {
+    item.attempts += 1;
+    await put('pending_sync', item);
+  }
+
+  async function flushOne(item) {
+    try {
+      if (item.operation === 'insert') {
+        await Supabase.insert(item.table, remotePayload(item.payload));
+      } else if (item.operation === 'update') {
+        await Supabase.update(item.table, remotePayload(item.payload));
+      } else if (item.operation === 'delete') {
+        await Supabase.deleteRecord(item.table, item.payload.id);
+      }
+      await completeSyncItem(item);
+    } catch (err) {
+      await failSyncItem(item);
+    }
+  }
+
+  // Flush pending_sync to Supabase. Large insert backlogs are sent in bounded
+  // batches, with an item-by-item fallback so one bad row cannot block the rest.
   async function flushSync() {
     const pending = await getAll('pending_sync');
     if (!pending.length) return;
@@ -135,24 +176,36 @@ const DB = (() => {
       const order = { sessions: 0, set_logs: 1 };
       return (order[a.table] ?? 2) - (order[b.table] ?? 2) || a.created_at - b.created_at;
     });
-    for (const item of pending) {
-      try {
-        if (item.operation === 'insert') {
-          await Supabase.insert(item.table, item.payload);
-        } else if (item.operation === 'update') {
-          await Supabase.update(item.table, item.payload);
-        } else if (item.operation === 'delete') {
-          // Deletes used to be fire-and-forget (lost on gym wifi); queued
-          // deletes survive offline and retry like every other write.
-          await Supabase.deleteRecord(item.table, item.payload.id);
+
+    const completed = new Set();
+    for (const table of ['sessions', 'set_logs']) {
+      const items = pending.filter(item => item.table === table && item.operation === 'insert');
+      for (let i = 0; i < items.length; i += 100) {
+        const batch = items.slice(i, i + 100);
+        try {
+          await Supabase.insert(table, batch.map(item => remotePayload(item.payload)));
+          for (const item of batch) {
+            await completeSyncItem(item);
+            completed.add(item.id);
+          }
+        } catch (_) {
+          // A batch is atomic. Retry rows separately so valid data still drains
+          // while the exact failing row remains queued for recovery.
+          for (const item of batch) {
+            await flushOne(item);
+            const stillQueued = await get('pending_sync', item.id);
+            if (!stillQueued) completed.add(item.id);
+          }
         }
-        await del('pending_sync', item.id);
-      } catch (err) {
-        item.attempts += 1;
-        await put('pending_sync', item);
+      }
+    }
+
+    for (const item of pending) {
+      if (!completed.has(item.id) && !(item.operation === 'insert' && (item.table === 'sessions' || item.table === 'set_logs'))) {
+        await flushOne(item);
       }
     }
   }
 
-  return { open, getAll, get, put, bulkPut, del, count, queueSync, purgePendingForSession, flushSync };
+  return { open, getAll, get, put, bulkPut, del, count, queueSync, purgePendingForSession, flushSync, setSyncPending };
 })();

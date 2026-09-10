@@ -2,6 +2,14 @@
 
 All notable changes to the Workout Tracker are documented in this file.
 
+## [0.0.2.0] - 2026-09-09
+
+### Fixed
+
+- Stop re-queuing workout history that Supabase has already saved.
+- Send large recovery queues in batches, while keeping any failed row on the device for another retry.
+- Mark new local records as pending until Supabase confirms the write.
+
 ## [0.0.1.0] - 2026-08-29
 
 ### Fixed

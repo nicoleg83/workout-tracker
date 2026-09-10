@@ -5,6 +5,7 @@
 //  4. Soft delete + Recently deleted recovery (restore / delete forever)
 //  5. Pending local catalog edits win over a stale server fetch
 //  6. Fixed 3-set default, no suggested sets/reps displays
+//  7. Sync recovery does not re-queue already-synced history
 import { describe, it, expect } from 'vitest';
 import { loadApp } from './helpers/load-app.js';
 
@@ -319,6 +320,55 @@ describe('pending local catalog edits win over a stale server fetch', () => {
     await ctx.loadExercises();
     const bench = ctx.state.exercises.find(e => e.id === 'ex-1');
     expect(bench.day).toBe('Library'); // the pending removal-to-Library wins on screen
+  });
+});
+
+describe('pending sync recovery', () => {
+  it('re-queues only locally marked unsynced logs and their parent session', async () => {
+    const ctx = loadApp();
+    const stores = stubDb(ctx);
+    const session = {
+      id: 'session-1', user_id: 'u1', day: 'Day 1', date: '2026-09-09',
+      notes: '{}', created_at: '2026-09-09T12:00:00.000Z', synced_at: '2026-09-09T12:00:00.000Z',
+    };
+    stores.sessions.set(session.id, session);
+    stores.set_logs.set('already-synced', {
+      id: 'already-synced', session_id: session.id, exercise_id: 'ex-1',
+      set_number: 1, completed: true, synced_at: '2026-09-08T12:00:00.000Z',
+    });
+    stores.set_logs.set('needs-sync', {
+      id: 'needs-sync', session_id: session.id, exercise_id: 'ex-1',
+      set_number: 2, completed: true, synced_at: '2026-09-09T12:00:00.000Z', _sync_pending: true,
+    });
+
+    await ctx.requeueOrphanedSetLogs();
+
+    const queued = [...stores.pending_sync.values()];
+    expect(queued.filter(item => item.table === 'sessions').map(item => item.payload.id)).toEqual([session.id]);
+    expect(queued.filter(item => item.table === 'set_logs').map(item => item.payload.id)).toEqual(['needs-sync']);
+    expect(queued.some(item => item.payload.id === 'already-synced')).toBe(false);
+  });
+
+  it('restores a missing parent-session write even when the set-log write survived', async () => {
+    const ctx = loadApp();
+    const stores = stubDb(ctx);
+    const session = {
+      id: 'session-1', user_id: 'u1', day: 'Day 1', date: '2026-09-09',
+      notes: '{}', created_at: '2026-09-09T12:00:00.000Z', synced_at: '2026-09-09T12:00:00.000Z',
+    };
+    const log = {
+      id: 'needs-sync', session_id: session.id, exercise_id: 'ex-1',
+      set_number: 1, completed: true, _sync_pending: true,
+    };
+    stores.sessions.set(session.id, session);
+    stores.set_logs.set(log.id, log);
+    await ctx.DB.queueSync('set_logs', 'insert', log);
+
+    await ctx.requeueOrphanedSetLogs();
+
+    const queued = [...stores.pending_sync.values()];
+    expect(queued.filter(item => item.table === 'set_logs')).toHaveLength(1);
+    expect(queued.filter(item => item.table === 'sessions').map(item => item.payload.id)).toEqual([session.id]);
   });
 });
 
